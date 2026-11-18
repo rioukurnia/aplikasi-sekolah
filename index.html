@@ -71,7 +71,7 @@
         };
 
         const initialDataTemplate = {
-            students: [], absensi: {}, leger: {}, legerCols: null, jadwal: { times: ['07:00-07:45', '07:45-08:30', '08:30-09:15', '09:15-09:45 (Istirahat)', '09:45-10:30', '10:30-11:15', '11:15-12:00'] }, ekskul: [], kokurikuler: [], homevisit: [], kontak: [], tugas: []
+            students: [], absensi: {}, leger: {}, legerCols: null, jadwal: { times: ['07:00-07:45', '07:45-08:30', '08:30-09:15', '09:15-09:45 (Istirahat)', '09:45-10:30', '10:30-11:15', '11:15-12:00'] }, ekskul: [], kokurikuler: [], homevisit: [], kontak: [], tugas: [], perangkat: []
         };
 
         const AppContext = createContext();
@@ -346,7 +346,7 @@
                 { id: 'homevisit', label: 'Home Visit', icon: 'fa-house-user', roles: ['admin', 'guru'] },
                 { id: 'kontak', label: 'Kontak & Grup', icon: 'fa-address-book', roles: ['admin', 'guru'] },
                 { id: 'tugas', label: 'Tugas & G-Drive', icon: 'fa-cloud-arrow-up', roles: ['admin', 'guru', 'guru_mapel'] },
-                { id: 'canva', label: 'Canva & LKPD', icon: 'fa-file-pdf', roles: ['admin', 'guru', 'guru_mapel'] },
+                { id: 'perangkat', label: 'Perangkat & AI', icon: 'fa-book-bookmark', roles: ['admin', 'guru', 'guru_mapel'] },
                 { id: 'pengaturan', label: 'Pengaturan Tema', icon: 'fa-gear', roles: ['admin', 'guru', 'guru_mapel'] },
             ].filter(m => m.roles.includes(displayedRole) || (currentUser.role === 'admin' && m.id === 'pengaturan'));
 
@@ -392,7 +392,7 @@
                     case 'homevisit': return <HomeVisitView {...props} />;
                     case 'kontak': return <KontakView {...props} />;
                     case 'tugas': return <TugasView {...props} />;
-                    case 'canva': return <CanvaView theme={currentTheme} />;
+                    case 'perangkat': return <PerangkatView {...props} />;
                     case 'pengaturan': return <PengaturanView appData={appData} updateSettings={updateSettings} theme={currentTheme} showToast={showToast} currentUser={currentUser} deleteUser={deleteUser} />;
                     default: return <DashboardView data={combinedData} theme={currentTheme} />;
                 }
@@ -1365,7 +1365,59 @@
             return <GenericTable title="Manajemen Tugas & Google Drive" dataKey="tugas" dataState={props.data.tugas} fields={[{key:'mapel', label:'Mata Pelajaran'}, {key:'judul', label:'Judul Tugas'}, {key:'link', label:'Link Google Drive Folder', isLink:true}]} {...props} students={props.data.students}/>;
         }
 
-        function CanvaView({ theme }) {
+        function PerangkatView(props) {
+            const { theme, showToast } = props;
+            const [activeSub, setActiveSub] = useState('ai'); // ai | drive | template
+            
+            // State for AI Generator
+            const [aiPrompt, setAiPrompt] = useState('');
+            const [isGenerating, setIsGenerating] = useState(false);
+            const [aiResult, setAiResult] = useState('');
+
+            const generateAI = async () => {
+                if (!aiPrompt.trim()) return showToast("Mohon ketik materi atau topik terlebih dahulu!", "Peringatan");
+                setIsGenerating(true);
+                try {
+                    const apiKey = ""; // Canvas otomatis akan mengisi ini di background
+                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
+                    
+                    const payload = {
+                        contents: [{ parts: [{ text: `Anda adalah asisten guru ahli. Buatkan kerangka perangkat pembelajaran (Modul Ajar / RPP / LKPD) yang sangat terstruktur dan detail untuk topik berikut: ${aiPrompt}. Gunakan bahasa Indonesia baku dan format yang rapi.` }] }]
+                    };
+
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    
+                    const result = await response.json();
+                    if (result.candidates && result.candidates.length > 0) {
+                        setAiResult(result.candidates[0].content.parts[0].text);
+                        showToast("Perangkat pembelajaran berhasil dibuat!", "Sukses");
+                    } else {
+                        showToast("Gagal menghasilkan kerangka, coba ulangi lagi.", "Error");
+                    }
+                } catch (e) {
+                    showToast("Terjadi gangguan koneksi ke server AI.", "Error");
+                }
+                setIsGenerating(false);
+            };
+
+            const copyToClipboard = (text) => {
+                const textArea = document.createElement("textarea");
+                textArea.value = text;
+                document.body.appendChild(textArea);
+                textArea.select();
+                try {
+                    document.execCommand('copy');
+                    showToast('Teks berhasil disalin ke clipboard!', 'Sukses');
+                } catch (err) {
+                    showToast('Gagal menyalin teks.', 'Error');
+                }
+                document.body.removeChild(textArea);
+            };
+
             const tpls = [
                 {t:'Sertifikat', c:'bg-blue-100', ic:'fa-award'}, 
                 {t:'Jadwal Piket', c:'bg-emerald-100', ic:'fa-broom'}, 
@@ -1384,8 +1436,6 @@
             ];
 
             const handleDownloadLKPD = (lkpd) => {
-                // Membuat fungsi simulasi unduh file teks. 
-                // (Untuk aplikasi nyata, ganti Blob text ini dengan URL File PDF Google Drive Asli)
                 const element = document.createElement("a");
                 const file = new Blob([`=======================================\nLEMBAR KERJA PESERTA DIDIK (LKPD)\n=======================================\n\nMata Pelajaran : ${lkpd.mapel}\nSasaran Kelas  : ${lkpd.kelas}\nMateri Utama   : ${lkpd.judul}\n\n(Ini adalah file unduhan simulasi. Anda dapat mengganti fungsi ini dengan tautan Google Drive / PDF asli Anda di dalam kode.)`], {type: 'text/plain'});
                 element.href = URL.createObjectURL(file);
@@ -1396,46 +1446,106 @@
             };
 
             return (
-                <div className="space-y-10 fade-in print-hidden">
-                    <div>
-                        <h2 className="text-2xl font-bold mb-4">Template Administrasi Canva</h2>
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                            {tpls.map((t,i) => (
-                                <div key={i} className="bg-white border rounded-2xl overflow-hidden shadow-sm hover:shadow-lg transition">
-                                    <div className={`h-40 ${t.c} flex items-center justify-center`}><i className={`fa-solid ${t.ic} text-5xl opacity-30`}></i></div>
-                                    <div className="p-5 text-center">
-                                        <h3 className="font-bold text-lg mb-3">{t.t}</h3>
-                                        <button onClick={()=>window.open('https://canva.com','_blank')} className={`w-full py-3 ${theme.bg} text-white font-bold rounded-xl`}>Buka Template</button>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
+                <div className="space-y-6 fade-in print-hidden">
+                    <div className="flex border-b border-slate-200 gap-4 mb-6">
+                        <button onClick={()=>setActiveSub('ai')} className={`pb-3 font-bold text-sm transition-colors border-b-2 ${activeSub === 'ai' ? `${theme.text} ${theme.border}` : 'border-transparent text-slate-400 hover:text-slate-700'}`}><i className="fa-solid fa-robot mr-2"></i>Generator AI</button>
+                        <button onClick={()=>setActiveSub('drive')} className={`pb-3 font-bold text-sm transition-colors border-b-2 ${activeSub === 'drive' ? `${theme.text} ${theme.border}` : 'border-transparent text-slate-400 hover:text-slate-700'}`}><i className="fa-brands fa-google-drive mr-2"></i>Arsip G-Drive</button>
+                        <button onClick={()=>setActiveSub('template')} className={`pb-3 font-bold text-sm transition-colors border-b-2 ${activeSub === 'template' ? `${theme.text} ${theme.border}` : 'border-transparent text-slate-400 hover:text-slate-700'}`}><i className="fa-solid fa-file-pdf mr-2"></i>Template & Bank LKPD</button>
                     </div>
 
-                    <div className="border-t pt-8">
-                        <div className="flex items-center gap-3 mb-6">
-                            <i className={`fa-solid fa-folder-open text-3xl ${theme.text}`}></i>
+                    {activeSub === 'ai' && (
+                        <div className="bg-white p-6 rounded-2xl shadow-sm border space-y-4 fade-in">
+                            <h3 className="text-xl font-bold text-slate-800">AI Asisten Pembuat Perangkat (Gemini)</h3>
+                            <p className="text-sm text-slate-500 mb-2">Ketikkan topik atau materi pelajaran, AI akan membantu merumuskan tujuan pembelajaran, langkah-langkah, dan penilaian (RPP/Modul Ajar).</p>
+                            
+                            <textarea
+                                value={aiPrompt} 
+                                onChange={e => setAiPrompt(e.target.value)}
+                                className="w-full border-2 border-slate-200 p-4 rounded-xl outline-none focus:border-blue-500 text-sm font-medium"
+                                rows="3" 
+                                placeholder="Contoh: Buatkan Modul Ajar untuk mata pelajaran IPAS Kelas 5 SD, Bab Ekosistem Darat, lengkap dengan rubrik penilaian..."
+                            ></textarea>
+                            
+                            <button onClick={generateAI} disabled={isGenerating} className={`px-6 py-3 ${theme.bg} ${theme.hover} text-white font-bold rounded-xl flex items-center gap-2 transition disabled:opacity-50 disabled:cursor-not-allowed`}>
+                                {isGenerating ? <i className="fa-solid fa-spinner fa-spin text-lg"></i> : <i className="fa-solid fa-wand-magic-sparkles text-lg"></i>}
+                                {isGenerating ? 'AI Sedang Merumuskan...' : 'Mulai Buat Perangkat'}
+                            </button>
+
+                            {aiResult && (
+                                <div className="mt-8 border-t pt-6 fade-in">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h4 className="font-bold text-lg text-slate-800">Hasil Kerangka Perangkat:</h4>
+                                        <button onClick={() => copyToClipboard(aiResult)} className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-xl text-sm font-bold transition shadow-sm flex items-center gap-2">
+                                            <i className="fa-regular fa-copy"></i> Salin Teks
+                                        </button>
+                                    </div>
+                                    <div className="bg-slate-50 p-6 rounded-xl border-2 border-slate-100 whitespace-pre-wrap text-sm text-slate-700 leading-relaxed max-h-[500px] overflow-y-auto shadow-inner">
+                                        {aiResult}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {activeSub === 'drive' && (
+                        <div className="fade-in">
+                            <GenericTable 
+                                title="Penyimpanan Link Perangkat (G-Drive)" 
+                                dataKey="perangkat" 
+                                dataState={props.data.perangkat} 
+                                fields={[
+                                    {key:'judul', label:'Judul Perangkat (Cth: Modul Ajar IPAS)'}, 
+                                    {key:'kelas', label:'Kelas / Fase'}, 
+                                    {key:'link', label:'Link Dokumen (Google Drive/Docs)', isLink:true}
+                                ]} 
+                                {...props} 
+                            />
+                        </div>
+                    )}
+
+                    {activeSub === 'template' && (
+                        <div className="space-y-10 fade-in">
                             <div>
-                                <h2 className="text-2xl font-bold text-slate-800">Bank LKPD (Lembar Kerja Peserta Didik)</h2>
-                                <p className="text-slate-500 text-sm">Unduh dokumen LKPD untuk semua mata pelajaran (Format siap cetak).</p>
+                                <h2 className="text-2xl font-bold mb-4">Template Administrasi Canva</h2>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                                    {tpls.map((t,i) => (
+                                        <div key={i} className="bg-white border rounded-2xl overflow-hidden shadow-sm hover:shadow-lg transition">
+                                            <div className={`h-32 ${t.c} flex items-center justify-center`}><i className={`fa-solid ${t.ic} text-5xl opacity-30`}></i></div>
+                                            <div className="p-4 text-center">
+                                                <h3 className="font-bold text-sm mb-3">{t.t}</h3>
+                                                <button onClick={()=>window.open('https://canva.com','_blank')} className={`w-full py-2 ${theme.bg} text-white font-bold rounded-xl text-sm`}>Buka Canva</button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="border-t pt-8">
+                                <div className="flex items-center gap-3 mb-6">
+                                    <i className={`fa-solid fa-folder-open text-3xl ${theme.text}`}></i>
+                                    <div>
+                                        <h2 className="text-2xl font-bold text-slate-800">Bank LKPD (Siap Cetak)</h2>
+                                        <p className="text-slate-500 text-sm">Unduh dokumen LKPD untuk semua mata pelajaran.</p>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                                     {lkpdBank.map((lkpd, i) => (
+                                         <div key={i} className="bg-white border rounded-xl p-5 hover:shadow-lg transition flex flex-col h-full">
+                                             <div className={`w-12 h-12 rounded-xl ${theme.bg} bg-opacity-10 ${theme.text} flex items-center justify-center mb-4`}>
+                                                 <i className="fa-solid fa-file-pdf text-2xl"></i>
+                                             </div>
+                                             <h3 className="font-bold text-slate-800 leading-tight">{lkpd.mapel}</h3>
+                                             <p className="text-xs font-bold text-slate-400 mt-1 mb-3">{lkpd.kelas}</p>
+                                             <p className="text-sm font-medium text-slate-600 mb-6 flex-grow">{lkpd.judul}</p>
+                                             <button onClick={() => handleDownloadLKPD(lkpd)} className={`w-full py-2.5 bg-slate-50 hover:bg-slate-100 border ${theme.text} font-bold rounded-xl transition flex justify-center items-center gap-2 mt-auto`}>
+                                                 <i className="fa-solid fa-download"></i> Unduh File
+                                             </button>
+                                         </div>
+                                     ))}
+                                </div>
                             </div>
                         </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                             {lkpdBank.map((lkpd, i) => (
-                                 <div key={i} className="bg-white border rounded-xl p-5 hover:shadow-lg transition flex flex-col h-full">
-                                     <div className={`w-12 h-12 rounded-xl ${theme.bg} bg-opacity-10 ${theme.text} flex items-center justify-center mb-4`}>
-                                         <i className="fa-solid fa-file-pdf text-2xl"></i>
-                                     </div>
-                                     <h3 className="font-bold text-slate-800 leading-tight">{lkpd.mapel}</h3>
-                                     <p className="text-xs font-bold text-slate-400 mt-1 mb-3">{lkpd.kelas}</p>
-                                     <p className="text-sm font-medium text-slate-600 mb-6 flex-grow">{lkpd.judul}</p>
-                                     <button onClick={() => handleDownloadLKPD(lkpd)} className={`w-full py-2.5 bg-slate-50 hover:bg-slate-100 border ${theme.text} font-bold rounded-xl transition flex justify-center items-center gap-2 mt-auto`}>
-                                         <i className="fa-solid fa-download"></i> Unduh File
-                                     </button>
-                                 </div>
-                             ))}
-                        </div>
-                    </div>
+                    )}
                 </div>
             );
         }
