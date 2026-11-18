@@ -1,2 +1,1 @@
-# aplikasi-sekolah
-administrasi sekolah
+
