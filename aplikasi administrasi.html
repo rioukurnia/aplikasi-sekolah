@@ -1,0 +1,1502 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aplikasi Administrasi Kelas SPA</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Font Awesome untuk Ikon -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel untuk JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- SheetJS untuk Excel -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f8fafc; }
+        
+        /* Animasi Transisi */
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
+        /* Scanner Animasi */
+        .scan-line { width: 100%; height: 2px; background: #22c55e; position: absolute; top: 0; box-shadow: 0 0 10px #22c55e; animation: scan 2s linear infinite; }
+        @keyframes scan { 0% { top: 0; } 50% { top: 100%; } 100% { top: 0; } }
+
+        /* Sembunyikan elemen saat dicetak dan Perbaikan Fitur Cetak (Print) */
+        @media print {
+            .print-hidden { display: none !important; }
+            body, html { background: white !important; margin: 0 !important; padding: 0 !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; height: auto !important; overflow: visible !important; }
+            
+            /* Menghapus batasan scroll & tinggi layar agar dokumen bisa dicetak berlembar-lembar */
+            .h-screen { height: auto !important; min-height: 100% !important; }
+            .overflow-hidden, .overflow-y-auto, .overflow-x-auto { overflow: visible !important; }
+            
+            .print-w-full { width: 100% !important; max-width: 100% !important; margin: 0 !important; padding: 0 !important; }
+            .print-border-black, .print-border-black th, .print-border-black td { border: 1px solid black !important; }
+            .break-inside-avoid { break-inside: avoid !important; page-break-inside: avoid !important; }
+            
+            @page { margin: 10mm; }
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, createContext, useContext, useRef } = React;
+
+        // --- KONFIGURASI TEMA ---
+        const themes = {
+            blue: { bg: 'bg-blue-600', hover: 'hover:bg-blue-700', text: 'text-blue-600', sidebar: 'bg-slate-900', border: 'border-blue-500' },
+            emerald: { bg: 'bg-emerald-600', hover: 'hover:bg-emerald-700', text: 'text-emerald-600', sidebar: 'bg-emerald-950', border: 'border-emerald-500' },
+            indigo: { bg: 'bg-indigo-600', hover: 'hover:bg-indigo-700', text: 'text-indigo-600', sidebar: 'bg-indigo-950', border: 'border-indigo-500' },
+            rose: { bg: 'bg-rose-600', hover: 'hover:bg-rose-700', text: 'text-rose-600', sidebar: 'bg-rose-950', border: 'border-rose-500' },
+        };
+
+        const initialDataTemplate = {
+            students: [], absensi: {}, leger: {}, legerCols: null, jadwal: { times: ['07:00-07:45', '07:45-08:30', '08:30-09:15', '09:15-09:45 (Istirahat)', '09:45-10:30', '10:30-11:15', '11:15-12:00'] }, ekskul: [], kokurikuler: [], homevisit: [], kontak: [], tugas: []
+        };
+
+        const AppContext = createContext();
+        
+        // --- HELPER UNTUK GOOGLE DRIVE IMAGE ---
+        const parseImageUrl = (url) => {
+            if (!url) return '';
+            // Deteksi link Google Drive dan ubah jadi link format gambar langsung
+            const driveRegex = /(?:file\/d\/|id=)([a-zA-Z0-9_-]+)/;
+            const match = url.match(driveRegex);
+            if (match && match[1]) {
+                // Menggunakan endpoint thumbnail Google yang lebih stabil dan aman dari blokir browser
+                return `https://drive.google.com/thumbnail?id=${match[1]}&sz=w800`;
+            }
+            return url;
+        };
+
+        // --- MODAL / DIALOG COMPONENT ---
+        function DialogBox({ isOpen, title, message, onConfirm, onCancel, type = 'alert' }) {
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 fade-in print-hidden">
+                    <div className="bg-white rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl">
+                        <div className={`p-4 ${type === 'confirm' ? 'bg-amber-500' : 'bg-blue-600'} text-white flex items-center gap-3`}>
+                            <i className={`fa-solid ${type === 'confirm' ? 'fa-triangle-exclamation' : 'fa-circle-info'} text-xl`}></i>
+                            <h3 className="font-bold text-lg">{title}</h3>
+                        </div>
+                        <div className="p-6">
+                            <p className="text-gray-700">{message}</p>
+                        </div>
+                        <div className="bg-gray-50 p-4 flex justify-end gap-3 border-t">
+                            {type === 'confirm' && (
+                                <button onClick={onCancel} className="px-4 py-2 text-gray-600 hover:bg-gray-200 rounded-xl font-medium transition">Batal</button>
+                            )}
+                            <button onClick={onConfirm} className={`px-4 py-2 text-white rounded-xl font-medium transition ${type === 'confirm' ? 'bg-amber-600 hover:bg-amber-700' : 'bg-blue-600 hover:bg-blue-700'}`}>
+                                {type === 'confirm' ? 'Ya, Lanjutkan' : 'Mengerti'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // --- KOMPONEN TOMBOL EXCEL ---
+        function ExcelButtons({ onExport, onImport, currentTheme }) {
+            const id = Math.random().toString(36).substring(7);
+            return (
+                <div className="flex gap-2 print-hidden">
+                    <button onClick={onExport} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-sm font-bold shadow-sm transition flex items-center gap-2">
+                        <i className="fa-solid fa-download"></i> Export (.xlsx)
+                    </button>
+                    <button onClick={() => document.getElementById(`file-upload-${id}`).click()} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-sm font-bold shadow-sm transition flex items-center gap-2">
+                        <i className="fa-solid fa-upload"></i> Import (.xlsx)
+                    </button>
+                    <input type="file" id={`file-upload-${id}`} accept=".xlsx, .xls" className="hidden" onChange={onImport} />
+                </div>
+            );
+        }
+
+        // --- APLIKASI UTAMA ---
+        function App() {
+            // State Auth & System
+            const [currentUser, setCurrentUser] = useState(null);
+            const [appData, setAppData] = useState({ users: [], db: {}, settings: { theme: 'blue', logo: '', schoolName: 'AdminKelas' } });
+            const [activeTab, setActiveTab] = useState('dashboard');
+            const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+            const [viewTeacher, setViewTeacher] = useState(''); // Untuk Admin melihat data guru
+            const [viewClass, setViewClass] = useState(''); // Tambahan untuk Guru Mapel memilih kelas
+
+            // Dialog State
+            const [dialog, setDialog] = useState({ isOpen: false, title: '', message: '', type: 'alert', onConfirm: null });
+
+            const showToast = (message, title = "Informasi") => {
+                setDialog({ isOpen: true, title, message, type: 'alert', onConfirm: () => setDialog(prev => Object.assign({}, prev, {isOpen: false})) });
+            };
+
+            const showConfirm = (message, onConfirmAction) => {
+                setDialog({
+                    isOpen: true, title: "Konfirmasi", message, type: 'confirm',
+                    onConfirm: () => { onConfirmAction(); setDialog(prev => Object.assign({}, prev, {isOpen: false})); },
+                    onCancel: () => setDialog(prev => Object.assign({}, prev, {isOpen: false}))
+                });
+            };
+
+            useEffect(() => {
+                const saved = localStorage.getItem('adminKelasSystemV3');
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    // Migrasi data jika diperlukan
+                    if (!parsed.settings) parsed.settings = { theme: 'blue', logo: '', schoolName: 'AdminKelas' };
+                    
+                    // PERBAIKAN SYNTAX LOGIN ADMIN: Memastikan array users ada (mencegah error dari versi lama)
+                    if (!parsed.users || !Array.isArray(parsed.users) || parsed.users.length === 0) {
+                        parsed.users = [{ username: 'admin', password: 'admin123', role: 'admin' }];
+                    } else {
+                        const adminIdx = parsed.users.findIndex(u => u.role === 'admin');
+                        if (adminIdx === -1) {
+                            parsed.users.push({ username: 'admin', password: 'admin123', role: 'admin' });
+                        } else {
+                            // Paksa update password admin ke admin123 jika cache lama masih menyimpannya sebagai "123"
+                            parsed.users[adminIdx].password = 'admin123';
+                        }
+                    }
+                    if (!parsed.db) parsed.db = {};
+                    
+                    setAppData(parsed);
+                } else {
+                    // Inisiasi awal dengan akun super admin
+                    setAppData({
+                        users: [{ username: 'admin', password: 'admin123', role: 'admin' }],
+                        db: {}, settings: { theme: 'blue', logo: '', schoolName: 'Sistem Admin' }
+                    });
+                }
+                const session = sessionStorage.getItem('currentUserV3');
+                if (session) {
+                    const user = JSON.parse(session);
+                    setCurrentUser(user);
+                    if (user.role === 'guru' || user.role === 'guru_mapel') {
+                        setViewTeacher(user.username);
+                    }
+                }
+            }, []);
+
+            // Simpan otomatis setiap ada perubahan
+            useEffect(() => {
+                if (appData.users.length > 0) {
+                    localStorage.setItem('adminKelasSystemV3', JSON.stringify(appData));
+                }
+            }, [appData]);
+
+            // Reset pilihan kelas jika berganti guru (untuk admin)
+            useEffect(() => { setViewClass(''); }, [viewTeacher]);
+
+            // Helper State Spesifik Guru (Terintegrasi)
+            const getCombinedData = () => {
+                let displayedRoleTemp = currentUser?.role;
+                if (currentUser?.role === 'admin' && viewTeacher) {
+                    const vt = appData.users.find(u => u.username === viewTeacher);
+                    if (vt) displayedRoleTemp = vt.role;
+                }
+
+                if (!viewTeacher) return initialDataTemplate;
+                const mainDb = appData.db[viewTeacher] || initialDataTemplate;
+
+                if (displayedRoleTemp === 'guru_mapel' && viewClass) {
+                    const classDb = appData.db[viewClass] || initialDataTemplate;
+                    return Object.assign({}, classDb, {
+                        leger: mainDb[`leger_${viewClass}`] || {},
+                        legerCols: mainDb[`legerCols_${viewClass}`] || null,
+                    });
+                }
+                return mainDb;
+            };
+
+            const integrateLegerToWaliKelas = (dbCopy, mapelUsername, className, mapelLeger, mapelCols) => {
+                const wkLeger = Object.assign({}, dbCopy[className].leger || {});
+                let wkLegerCols = dbCopy[className].legerCols || ['MTK', 'IPA', 'IPS', 'B.IND', 'B.ING', 'PKN', 'AGAMA'];
+                
+                if (!wkLegerCols.includes(mapelUsername)) {
+                    wkLegerCols = [...wkLegerCols, mapelUsername];
+                    dbCopy[className].legerCols = wkLegerCols;
+                }
+                
+                const colsToUse = mapelCols || ['Tugas 1', 'Tugas 2', 'UH 1', 'UTS', 'UAS'];
+                
+                Object.keys(mapelLeger).forEach(studentId => {
+                    if (!wkLeger[studentId]) wkLeger[studentId] = {};
+                    let total = 0, count = 0;
+                    colsToUse.forEach(c => {
+                        if (mapelLeger[studentId][c] !== undefined && mapelLeger[studentId][c] !== '' && !isNaN(mapelLeger[studentId][c])) {
+                            total += Number(mapelLeger[studentId][c]);
+                            count++;
+                        }
+                    });
+                    wkLeger[studentId][mapelUsername] = count > 0 ? Math.round(total / count) : '';
+                });
+                dbCopy[className].leger = wkLeger;
+            };
+
+            const updateCombinedData = (key, newData) => {
+                if (!viewTeacher) return;
+                
+                let displayedRoleTemp = currentUser?.role;
+                if (currentUser?.role === 'admin' && viewTeacher) {
+                    const vt = appData.users.find(u => u.username === viewTeacher);
+                    if (vt) displayedRoleTemp = vt.role;
+                }
+
+                setAppData(prev => {
+                    const dbCopy = Object.assign({}, prev.db);
+                    const isMapel = displayedRoleTemp === 'guru_mapel' && viewClass;
+                    
+                    if (isMapel) {
+                        if (!dbCopy[viewClass]) dbCopy[viewClass] = Object.assign({}, initialDataTemplate);
+                        if (!dbCopy[viewTeacher]) dbCopy[viewTeacher] = Object.assign({}, initialDataTemplate);
+
+                        if (key === 'leger' || key === 'legerCols') {
+                            dbCopy[viewTeacher][`${key}_${viewClass}`] = newData;
+                            
+                            // MENGGUNAKAN NAMA MAPEL (mapelName) BUKAN USERNAME
+                            const mapelUser = prev.users.find(u => u.username === (currentUser.role === 'admin' ? viewTeacher : currentUser.username));
+                            const mapelName = mapelUser && mapelUser.mapelName ? mapelUser.mapelName : (currentUser.role === 'admin' ? viewTeacher : currentUser.username);
+                            
+                            const mapelLeger = key === 'leger' ? newData : (dbCopy[viewTeacher][`leger_${viewClass}`] || {});
+                            const mapelCols = key === 'legerCols' ? newData : (dbCopy[viewTeacher][`legerCols_${viewClass}`] || ['Tugas 1', 'Tugas 2', 'UH 1', 'UTS', 'UAS']);
+                            
+                            integrateLegerToWaliKelas(dbCopy, mapelName, viewClass, mapelLeger, mapelCols);
+                        } else {
+                            // Jadwal, Absensi, dan data lain otomatis terintegrasi ke Wali Kelas
+                            dbCopy[viewClass][key] = newData;
+                        }
+                    } else {
+                        if (!dbCopy[viewTeacher]) dbCopy[viewTeacher] = Object.assign({}, initialDataTemplate);
+                        dbCopy[viewTeacher][key] = newData;
+                    }
+                    return Object.assign({}, prev, { db: dbCopy });
+                });
+            };
+
+            const updateSettings = (newSettings) => {
+                setAppData(prev => Object.assign({}, prev, { settings: Object.assign({}, prev.settings, newSettings) }));
+            };
+
+            const deleteUser = (username) => {
+                showConfirm(`Yakin menghapus akun "${username}"? Semua data kelas dan nilai miliknya akan ikut terhapus dari sistem.`, () => {
+                    setAppData(prev => {
+                        const newUsers = prev.users.filter(u => u.username !== username);
+                        const newDb = Object.assign({}, prev.db);
+                        delete newDb[username]; // Menghapus database guru tersebut
+                        return Object.assign({}, prev, { users: newUsers, db: newDb });
+                    });
+                    if (viewTeacher === username) setViewTeacher('');
+                    showToast(`Akun guru ${username} berhasil dihapus!`, "Sukses");
+                });
+            };
+
+            const handleLogin = (user) => {
+                setCurrentUser(user);
+                sessionStorage.setItem('currentUserV3', JSON.stringify(user));
+                if (user.role === 'guru' || user.role === 'guru_mapel') {
+                    setViewTeacher(user.username);
+                } else {
+                    setViewTeacher(''); // Reset jika admin
+                }
+            };
+
+            const handleLogout = () => {
+                setCurrentUser(null);
+                setViewTeacher('');
+                sessionStorage.removeItem('currentUserV3');
+            };
+
+            if (!currentUser) return <LoginScreen appData={appData} setAppData={setAppData} onLogin={handleLogin} showToast={showToast} />;
+
+            const currentTheme = themes[appData.settings.theme] || themes.blue;
+            const combinedData = getCombinedData();
+
+            let displayedRole = currentUser.role;
+            if (currentUser.role === 'admin' && viewTeacher) {
+                const vt = appData.users.find(u => u.username === viewTeacher);
+                if (vt) displayedRole = vt.role;
+            }
+
+            const menuItems = [
+                { id: 'dashboard', label: 'Dashboard', icon: 'fa-chart-pie', roles: ['admin', 'guru', 'guru_mapel'] },
+                { id: 'siswa', label: 'Data & Foto Siswa', icon: 'fa-users', roles: ['admin', 'guru'] },
+                { id: 'absensi', label: 'Rekap Absensi', icon: 'fa-clipboard-user', roles: ['admin', 'guru', 'guru_mapel'] },
+                { id: 'leger', label: displayedRole === 'guru_mapel' ? 'Buku Nilai Mapel' : 'Leger Nilai', icon: 'fa-file-excel', roles: ['admin', 'guru', 'guru_mapel'] },
+                { id: 'jadwal', label: 'Jadwal Pelajaran', icon: 'fa-calendar-days', roles: ['admin', 'guru', 'guru_mapel'] },
+                { id: 'kokurikuler', label: 'Data Kokurikuler', icon: 'fa-book-open-reader', roles: ['admin', 'guru'] },
+                { id: 'ekskul', label: 'Ekstrakurikuler', icon: 'fa-medal', roles: ['admin', 'guru'] },
+                { id: 'homevisit', label: 'Home Visit', icon: 'fa-house-user', roles: ['admin', 'guru'] },
+                { id: 'kontak', label: 'Kontak & Grup', icon: 'fa-address-book', roles: ['admin', 'guru'] },
+                { id: 'tugas', label: 'Tugas & G-Drive', icon: 'fa-cloud-arrow-up', roles: ['admin', 'guru', 'guru_mapel'] },
+                { id: 'canva', label: 'Canva & LKPD', icon: 'fa-file-pdf', roles: ['admin', 'guru', 'guru_mapel'] },
+                { id: 'pengaturan', label: 'Pengaturan Tema', icon: 'fa-gear', roles: ['admin', 'guru', 'guru_mapel'] },
+            ].filter(m => m.roles.includes(displayedRole) || (currentUser.role === 'admin' && m.id === 'pengaturan'));
+
+            const renderContent = () => {
+                const props = {
+                    data: combinedData,
+                    updateData: updateCombinedData,
+                    theme: currentTheme,
+                    settings: appData.settings,
+                    showToast, showConfirm
+                };
+
+                // Jika admin tapi belum milih guru
+                if (currentUser.role === 'admin' && !viewTeacher && activeTab !== 'pengaturan') {
+                    return (
+                        <div className="flex flex-col items-center justify-center h-64 text-slate-500 fade-in">
+                            <i className="fa-solid fa-users-gear text-6xl mb-4 opacity-20"></i>
+                            <h2 className="text-xl font-bold">Pilih Guru Terlebih Dahulu</h2>
+                            <p>Gunakan dropdown di atas untuk melihat data spesifik guru.</p>
+                        </div>
+                    );
+                }
+
+                // Jika Guru Mapel belum memilih kelas (Wali Kelas)
+                if (displayedRole === 'guru_mapel' && !viewClass && !['dashboard', 'pengaturan', 'canva', 'jadwal'].includes(activeTab)) {
+                    return (
+                        <div className="flex flex-col items-center justify-center h-64 text-slate-500 fade-in">
+                            <i className="fa-solid fa-chalkboard-user text-6xl mb-4 opacity-20"></i>
+                            <h2 className="text-xl font-bold">Pilih Kelas Terlebih Dahulu</h2>
+                            <p>Gunakan dropdown "Kelas" di pojok kanan atas untuk memilih kelas yang akan dikelola nilainya.</p>
+                        </div>
+                    );
+                }
+
+                switch (activeTab) {
+                    case 'dashboard': return <DashboardView data={combinedData} theme={currentTheme} />;
+                    case 'siswa': return <DataSiswaView {...props} />;
+                    case 'absensi': return <AbsensiView {...props} />;
+                    case 'leger': return <LegerView {...props} activeRole={displayedRole} />;
+                    case 'jadwal': return <JadwalView {...props} />;
+                    case 'kokurikuler': return <KokurikulerView {...props} />;
+                    case 'ekskul': return <EkskulView {...props} />;
+                    case 'homevisit': return <HomeVisitView {...props} />;
+                    case 'kontak': return <KontakView {...props} />;
+                    case 'tugas': return <TugasView {...props} />;
+                    case 'canva': return <CanvaView theme={currentTheme} />;
+                    case 'pengaturan': return <PengaturanView appData={appData} updateSettings={updateSettings} theme={currentTheme} showToast={showToast} currentUser={currentUser} deleteUser={deleteUser} />;
+                    default: return <DashboardView data={combinedData} theme={currentTheme} />;
+                }
+            };
+
+            const activeMenu = menuItems.find(m => m.id === activeTab);
+
+            return (
+                <AppContext.Provider value={{ showToast, showConfirm }}>
+                    <div className="flex print:block h-screen overflow-hidden text-slate-800 print:overflow-visible">
+                        {/* Sidebar Overlay */}
+                        {isSidebarOpen && (
+                            <div className="fixed inset-0 bg-slate-900 bg-opacity-50 z-20 md:hidden print-hidden" onClick={() => setIsSidebarOpen(false)}></div>
+                        )}
+
+                        {/* Sidebar */}
+                        <aside className={`fixed md:static inset-y-0 left-0 z-30 w-72 ${currentTheme.sidebar} text-white transform transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'} flex flex-col print-hidden shadow-2xl`}>
+                            <div className="flex items-center gap-3 h-20 px-6 bg-black/20 flex-shrink-0">
+                                {appData.settings.logo ? (
+                                    <img src={parseImageUrl(appData.settings.logo)} className="h-10 w-10 object-cover bg-white rounded-lg p-1" />
+                                ) : (
+                                    <div className={`w-10 h-10 rounded-xl ${currentTheme.bg} flex items-center justify-center`}><i className="fa-solid fa-graduation-cap text-xl"></i></div>
+                                )}
+                                <span className="font-bold text-lg truncate flex-1 leading-tight">{appData.settings.schoolName}</span>
+                                <button className="md:hidden text-white/50 hover:text-white" onClick={() => setIsSidebarOpen(false)}><i className="fa-solid fa-xmark text-xl"></i></button>
+                            </div>
+                            
+                            <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
+                                {menuItems.map(item => (
+                                    <button key={item.id} onClick={() => { setActiveTab(item.id); setIsSidebarOpen(false); }}
+                                        className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl transition-all ${activeTab === item.id ? `${currentTheme.bg} text-white shadow-lg shadow-black/10` : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}>
+                                        <i className={`fa-solid ${item.icon} w-5 text-center ${activeTab === item.id ? 'text-white' : 'text-white/50'}`}></i>
+                                        <span className="font-medium">{item.label}</span>
+                                    </button>
+                                ))}
+                            </nav>
+
+                            <div className="p-5 bg-black/20 mt-auto border-t border-white/5">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center">
+                                            <i className={`fa-solid ${currentUser.role === 'admin' ? 'fa-user-tie' : 'fa-chalkboard-user'} text-white/70`}></i>
+                                        </div>
+                                        <div className="text-left">
+                                            <p className="text-sm font-bold text-white leading-none">{currentUser.username}</p>
+                                            <p className="text-xs text-slate-400 mt-1 tracking-wider">{currentUser.role === 'guru_mapel' ? `MAPEL: ${currentUser.mapelName || currentUser.username}`.toUpperCase() : currentUser.role === 'guru' ? 'WALI KELAS' : 'SUPER ADMIN'}</p>
+                                        </div>
+                                    </div>
+                                    <button onClick={handleLogout} className="w-10 h-10 flex items-center justify-center text-rose-400 hover:bg-rose-500 hover:text-white rounded-xl transition">
+                                        <i className="fa-solid fa-arrow-right-from-bracket"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </aside>
+
+                        {/* Main Content */}
+                        <div className="flex-1 flex print:block flex-col min-w-0 print-w-full print:overflow-visible">
+                            <header className="bg-white border-b h-20 flex items-center justify-between px-6 z-10 print-hidden shadow-sm">
+                                <div className="flex items-center gap-4">
+                                    <button className="md:hidden text-slate-500 hover:text-slate-800" onClick={() => setIsSidebarOpen(true)}>
+                                        <i className="fa-solid fa-bars text-xl"></i>
+                                    </button>
+                                    <h1 className="text-2xl font-bold text-slate-800 hidden sm:block">
+                                        {activeMenu ? activeMenu.label : 'Dashboard'}
+                                    </h1>
+                                </div>
+                                
+                                <div className="flex items-center gap-4">
+                                    {currentUser.role === 'admin' && (
+                                        <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-xl">
+                                            <span className="text-xs font-bold text-amber-700 hidden md:inline">Data Guru:</span>
+                                            <select value={viewTeacher} onChange={e=>setViewTeacher(e.target.value)} className="bg-transparent text-sm font-bold text-amber-900 outline-none cursor-pointer">
+                                                <option value="">-- Pilih Guru --</option>
+                                                {appData.users.filter(u => u.role === 'guru' || u.role === 'guru_mapel').map(u => (
+                                                    <option key={u.username} value={u.username}>{u.username} ({u.role === 'guru' ? 'Wali Kelas' : 'Guru Mapel'})</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    )}
+                                    {displayedRole === 'guru_mapel' && (
+                                        <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-200 px-3 py-1.5 rounded-xl">
+                                            <span className="text-xs font-bold text-indigo-700 hidden md:inline">Kelas:</span>
+                                            <select value={viewClass} onChange={e=>setViewClass(e.target.value)} className="bg-transparent text-sm font-bold text-indigo-900 outline-none cursor-pointer">
+                                                <option value="">-- Pilih Kelas --</option>
+                                                {appData.users.filter(u => u.role === 'guru').map(u => (
+                                                    <option key={u.username} value={u.username}>Kelas {u.username}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    )}
+                                    <button onClick={() => window.print()} className={`hidden sm:flex items-center gap-2 ${currentTheme.bg} hover:brightness-90 text-white px-5 py-2.5 rounded-xl text-sm font-bold transition shadow-sm`}>
+                                        <i className="fa-solid fa-print"></i> Cetak PDF
+                                    </button>
+                                </div>
+                            </header>
+
+                            <main className="flex-1 overflow-y-auto p-6 bg-slate-50/50 print-w-full print:bg-white print:p-0 print:overflow-visible">
+                                <div className="max-w-7xl mx-auto print-w-full">
+                                    {renderContent()}
+                                </div>
+                            </main>
+                        </div>
+                        
+                        <DialogBox {...dialog} />
+                    </div>
+                </AppContext.Provider>
+            );
+        }
+
+        // --- HALAMAN LOGIN ---
+        function LoginScreen({ appData, setAppData, onLogin, showToast }) {
+            const [tab, setTab] = useState('login'); // login | register | forgot
+            const [form, setForm] = useState({ user: '', pass: '', pass2: '', tipe: 'guru', mapelName: '' });
+            const [showPass, setShowPass] = useState(false);
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (tab === 'login') {
+                    // Fallback sistem mutlak agar Admin SELALU BISA LOGIN terlepas dari error localstorage
+                    if (form.user === 'admin' && form.pass === 'admin123') {
+                        onLogin({ username: 'admin', password: 'admin123', role: 'admin' });
+                        return;
+                    }
+
+                    const user = appData.users.find(u => u.username === form.user && u.password === form.pass);
+                    if (user) onLogin(user);
+                    else showToast('Username atau password salah! (Gunakan admin / admin123 untuk super admin)', 'Login Gagal');
+                } else if (tab === 'forgot') {
+                    if (form.pass !== form.pass2) return showToast('Konfirmasi password baru tidak cocok!', 'Gagal');
+                    const userIdx = appData.users.findIndex(u => u.username === form.user);
+                    if (userIdx !== -1) {
+                        const newUsers = [...appData.users];
+                        newUsers[userIdx].password = form.pass;
+                        setAppData(prev => Object.assign({}, prev, { users: newUsers }));
+                        showToast('Password berhasil direset! Silakan masuk dengan password baru.', 'Sukses');
+                        setTab('login');
+                        setForm(Object.assign({}, form, {pass: '', pass2: ''}));
+                    } else {
+                        showToast('Username tidak ditemukan di sistem!', 'Gagal');
+                    }
+                } else {
+                    if (form.pass !== form.pass2) return showToast('Konfirmasi password tidak cocok!', 'Gagal');
+                    if (appData.users.find(u => u.username === form.user)) return showToast('Username sudah terdaftar!', 'Gagal');
+                    
+                    const newUser = { username: form.user, password: form.pass, role: form.tipe, mapelName: form.tipe === 'guru_mapel' ? form.mapelName : '' };
+                    setAppData(prev => Object.assign({}, prev, { users: [...prev.users, newUser] }));
+                    showToast('Pendaftaran berhasil! Silakan masuk.', 'Sukses');
+                    setTab('login');
+                    setForm(Object.assign({}, form, {pass: '', pass2: '', tipe: 'guru', mapelName: ''}));
+                }
+            };
+
+            return (
+                <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
+                    <div className="max-w-md w-full bg-white rounded-3xl shadow-2xl overflow-hidden">
+                        <div className="bg-slate-900 p-8 text-center relative overflow-hidden">
+                            <div className="absolute inset-0 opacity-10 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')]"></div>
+                            {appData.settings.logo ? (
+                                <img src={parseImageUrl(appData.settings.logo)} className="h-20 w-20 mx-auto object-cover bg-white rounded-2xl p-2 relative z-10 mb-4 shadow-lg" />
+                            ) : (
+                                <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-blue-600 mb-4 text-white relative z-10 shadow-lg shadow-blue-500/50">
+                                    <i className="fa-solid fa-graduation-cap text-4xl"></i>
+                                </div>
+                            )}
+                            <h1 className="text-3xl font-extrabold text-white relative z-10">{appData.settings.schoolName}</h1>
+                            <p className="text-slate-400 mt-2 relative z-10 font-medium">Sistem Administrasi Terpadu</p>
+                        </div>
+                        
+                        <div className="flex border-b">
+                            <button onClick={()=>setTab('login')} className={`flex-1 py-4 font-bold text-sm transition ${tab==='login' ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/50' : 'text-slate-400 hover:text-slate-600'}`}>Masuk</button>
+                            <button onClick={()=>setTab('register')} className={`flex-1 py-4 font-bold text-sm transition ${tab==='register' ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/50' : 'text-slate-400 hover:text-slate-600'}`}>Daftar Guru</button>
+                            <button onClick={()=>setTab('forgot')} className={`flex-1 py-4 font-bold text-sm transition ${tab==='forgot' ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/50' : 'text-slate-400 hover:text-slate-600'}`}>Lupa Sandi</button>
+                        </div>
+
+                        <form onSubmit={handleSubmit} className="p-8 space-y-5">
+                            <div>
+                                <label className="block text-sm font-bold text-slate-700 mb-1">Username</label>
+                                <input type="text" required value={form.user} onChange={e => setForm(Object.assign({}, form, {user: e.target.value}))} className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:border-blue-600 outline-none font-medium transition" placeholder="Masukkan username" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-slate-700 mb-1">{tab === 'forgot' ? 'Password Baru' : 'Password'}</label>
+                                <div className="relative">
+                                    <input type={showPass ? "text" : "password"} required value={form.pass} onChange={e => setForm(Object.assign({}, form, {pass: e.target.value}))} className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:border-blue-600 outline-none font-medium transition" placeholder={tab === 'forgot' ? "Masukkan password baru" : "Masukkan password"} />
+                                    <button type="button" onClick={() => setShowPass(!showPass)} className="absolute right-4 top-3.5 text-slate-400 hover:text-blue-600 transition">
+                                        <i className={`fa-solid ${showPass ? 'fa-eye-slash' : 'fa-eye'}`}></i>
+                                    </button>
+                                </div>
+                            </div>
+                            {(tab === 'register' || tab === 'forgot') && (
+                                <React.Fragment>
+                                    {tab === 'register' && (
+                                        <React.Fragment>
+                                            <div>
+                                                <label className="block text-sm font-bold text-slate-700 mb-1">Tipe Akun</label>
+                                                <select value={form.tipe} onChange={e => setForm(Object.assign({}, form, {tipe: e.target.value}))} className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:border-blue-600 outline-none font-medium transition bg-white">
+                                                    <option value="guru">Guru Kelas (Wali Kelas)</option>
+                                                    <option value="guru_mapel">Guru Mata Pelajaran</option>
+                                                </select>
+                                            </div>
+                                            {form.tipe === 'guru_mapel' && (
+                                                <div>
+                                                    <label className="block text-sm font-bold text-slate-700 mb-1">Nama Mata Pelajaran</label>
+                                                    <input type="text" required value={form.mapelName} onChange={e => setForm(Object.assign({}, form, {mapelName: e.target.value}))} className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:border-blue-600 outline-none font-medium transition bg-white" placeholder="Contoh: PJOK, PAI, dll" />
+                                                </div>
+                                            )}
+                                        </React.Fragment>
+                                    )}
+                                    <div>
+                                        <label className="block text-sm font-bold text-slate-700 mb-1">Konfirmasi Password {tab === 'forgot' ? 'Baru' : ''}</label>
+                                        <div className="relative">
+                                            <input type={showPass ? "text" : "password"} required value={form.pass2} onChange={e => setForm(Object.assign({}, form, {pass2: e.target.value}))} className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:border-blue-600 outline-none font-medium transition" placeholder="Ketik ulang password" />
+                                        </div>
+                                    </div>
+                                </React.Fragment>
+                            )}
+                            
+                            <button type="submit" className="w-full py-3.5 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-lg shadow-blue-500/30 transition-all active:scale-[0.98] mt-2">
+                                {tab === 'login' ? 'Masuk ke Sistem' : tab === 'forgot' ? 'Reset Password' : 'Daftar Sekarang'}
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            );
+        }
+
+        // --- SUB VIEWS ---
+        function DashboardView({ data, theme }) {
+            const activeCount = data.students.length;
+            const tugasCount = data.tugas ? data.tugas.length : 0;
+            const homevisitCount = data.homevisit ? data.homevisit.length : 0;
+            return (
+                <div className="space-y-6 fade-in print-hidden">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div className={`bg-white p-6 rounded-2xl shadow-sm border-l-4 ${theme.border}`}>
+                            <div className="flex justify-between items-start">
+                                <div>
+                                    <p className="text-sm font-bold text-slate-500 mb-1">Total Siswa Terdaftar</p>
+                                    <p className={`text-4xl font-black ${theme.text}`}>{activeCount}</p>
+                                </div>
+                                <div className={`p-3 rounded-xl ${theme.bg} text-white`}><i className="fa-solid fa-users text-xl"></i></div>
+                            </div>
+                        </div>
+                        <div className="bg-white p-6 rounded-2xl shadow-sm border-l-4 border-emerald-500">
+                            <div className="flex justify-between items-start">
+                                <div>
+                                    <p className="text-sm font-bold text-slate-500 mb-1">Tugas / Drive Links</p>
+                                    <p className="text-4xl font-black text-emerald-600">{tugasCount}</p>
+                                </div>
+                                <div className="p-3 rounded-xl bg-emerald-600 text-white"><i className="fa-solid fa-cloud-arrow-up text-xl"></i></div>
+                            </div>
+                        </div>
+                        <div className="bg-white p-6 rounded-2xl shadow-sm border-l-4 border-amber-500">
+                            <div className="flex justify-between items-start">
+                                <div>
+                                    <p className="text-sm font-bold text-slate-500 mb-1">Kegiatan Home Visit</p>
+                                    <p className="text-4xl font-black text-amber-600">{homevisitCount}</p>
+                                </div>
+                                <div className="p-3 rounded-xl bg-amber-600 text-white"><i className="fa-solid fa-house-user text-xl"></i></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function DataSiswaView({ data, updateData, theme, settings, showToast, showConfirm }) {
+            const [form, setForm] = useState({ nisn: '', nama: '', gender: 'L', urlFoto: '' });
+            const [editId, setEditId] = useState(null);
+            const [isPrintingCards, setIsPrintingCards] = useState(false);
+            const { students } = data;
+
+            const exportExcel = () => {
+                const ws = XLSX.utils.json_to_sheet(students.map(s => ({ NISN: s.nisn, 'Nama Siswa': s.nama, 'L/P': s.gender, 'URL Foto': s.urlFoto || '' })));
+                const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Siswa");
+                XLSX.writeFile(wb, "Data_Siswa.xlsx");
+            };
+
+            const importExcel = (e) => {
+                const file = e.target.files[0]; if(!file) return;
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    const wb = XLSX.read(evt.target.result, {type: 'binary'});
+                    const rowData = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+                    
+                    const newStudents = rowData.map((d,i) => ({
+                        id: Date.now().toString() + i,
+                        nisn: d.NISN ? d.NISN.toString() : '',
+                        nama: d['Nama Siswa'] || '',
+                        gender: d['L/P'] || 'L',
+                        urlFoto: d['URL Foto'] || ''
+                    })).filter(s => s.nisn && s.nama);
+                    
+                    const merged = [...students];
+                    newStudents.forEach(ns => {
+                       const idx = merged.findIndex(s => s.nisn === ns.nisn);
+                       if (idx >= 0) merged[idx] = Object.assign({}, merged[idx], ns);
+                       else merged.push(ns);
+                    });
+                    
+                    updateData('students', merged);
+                    showToast("Data Siswa berhasil diunggah!", "Berhasil");
+                };
+                reader.readAsBinaryString(file); e.target.value = null;
+            };
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if(!form.nisn || !form.nama) return;
+                if(editId) {
+                    updateData('students', students.map(s => s.id === editId ? Object.assign({}, s, form) : s));
+                } else {
+                    updateData('students', [...students, Object.assign({}, form, {id: Date.now().toString()})]);
+                }
+                setForm({ nisn: '', nama: '', gender: 'L', urlFoto: '' }); setEditId(null);
+            };
+
+            const hapus = (id) => showConfirm('Yakin menghapus siswa ini?', () => {
+                updateData('students', students.filter(s => s.id !== id));
+            });
+
+            if (isPrintingCards) {
+                return (
+                    <div className="bg-white p-6 rounded-2xl shadow-sm border print:border-none print:shadow-none print:p-0 fade-in">
+                        <div className="flex justify-between items-center mb-6 print-hidden">
+                            <h2 className="text-2xl font-bold">Pratinjau Kartu Siswa</h2>
+                            <div className="flex gap-2">
+                                <button onClick={() => setIsPrintingCards(false)} className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold transition">Kembali</button>
+                                <button onClick={() => window.print()} className={`px-5 py-2 ${theme.bg} hover:brightness-90 text-white rounded-xl font-bold transition flex items-center gap-2`}><i className="fa-solid fa-print"></i> Cetak Sekarang</button>
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 print-w-full">
+                            {students.map(s => (
+                                <div key={s.id} className={`border-2 ${theme.border} rounded-2xl p-4 flex gap-4 break-inside-avoid relative overflow-hidden bg-white`}>
+                                    <div className={`absolute top-0 right-0 w-32 h-32 ${theme.bg} opacity-10 rounded-bl-full`}></div>
+                                    <div className="w-1/3 flex flex-col items-center justify-center border-r-2 border-slate-100 pr-4 z-10">
+                                        {s.urlFoto ? (
+                                            <img src={parseImageUrl(s.urlFoto)} className="w-24 h-28 object-cover rounded-xl border-2 shadow-sm mb-3" onError={(e)=>{e.target.src='https://placehold.co/100x120/eee/999?text=Foto'}} />
+                                        ) : (
+                                            <div className={`w-24 h-28 ${theme.bg} bg-opacity-10 rounded-xl flex items-center justify-center text-4xl font-black ${theme.text} mb-3 border-2 border-transparent`}>{s.nama.charAt(0)}</div>
+                                        )}
+                                        <img src={`https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=${s.nisn}`} alt="QR" className="w-20 h-20 border p-1 rounded-lg bg-white shadow-sm" />
+                                    </div>
+                                    <div className="w-2/3 flex flex-col justify-center z-10">
+                                        <div className="text-center mb-3 border-b-2 border-slate-100 pb-3">
+                                            <div className="flex justify-center items-center gap-2 mb-1">
+                                                {settings.logo && <img src={parseImageUrl(settings.logo)} className="w-6 h-6 object-contain" />}
+                                                <h3 className="font-black text-lg leading-tight uppercase tracking-wide text-slate-800">{settings.schoolName}</h3>
+                                            </div>
+                                            <p className={`text-xs font-bold ${theme.text} tracking-widest`}>KARTU TANDA SISWA</p>
+                                        </div>
+                                        <div className="text-sm font-bold space-y-1.5">
+                                            <div>
+                                                <p className="text-slate-400 text-[10px] uppercase tracking-wider">Nama Lengkap</p>
+                                                <p className="text-slate-800 text-base">{s.nama}</p>
+                                            </div>
+                                            <div className="flex gap-4">
+                                                <div className="flex-1">
+                                                    <p className="text-slate-400 text-[10px] uppercase tracking-wider">NISN</p>
+                                                    <p className="font-mono text-slate-700">{s.nisn}</p>
+                                                </div>
+                                                <div className="flex-1">
+                                                    <p className="text-slate-400 text-[10px] uppercase tracking-wider">L/P</p>
+                                                    <p className="text-slate-700">{s.gender === 'L' ? 'Laki-laki' : 'Perempuan'}</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="space-y-6 fade-in">
+                    <div className="flex flex-wrap justify-between gap-4 items-center print-hidden">
+                        <h2 className="text-2xl font-bold">Data & Foto Siswa</h2>
+                        <div className="flex flex-wrap gap-2">
+                            <button onClick={() => setIsPrintingCards(true)} className={`bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-xl text-sm font-bold shadow-sm transition flex items-center gap-2`}>
+                                <i className="fa-solid fa-id-card"></i> Cetak Kartu
+                            </button>
+                            <ExcelButtons onExport={exportExcel} onImport={importExcel} currentTheme={theme} />
+                        </div>
+                    </div>
+                    
+                    <form onSubmit={handleSubmit} className="bg-white p-6 rounded-2xl shadow-sm border print-hidden grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
+                        <div className="lg:col-span-1"><label className="block text-xs font-bold text-slate-600 mb-1">NISN</label><input required type="text" value={form.nisn} onChange={e=>setForm(Object.assign({}, form, {nisn: e.target.value}))} className="w-full border p-2.5 rounded-xl text-sm outline-none focus:border-blue-500" placeholder="Nomor Induk"/></div>
+                        <div className="lg:col-span-1"><label className="block text-xs font-bold text-slate-600 mb-1">Nama Lengkap</label><input required type="text" value={form.nama} onChange={e=>setForm(Object.assign({}, form, {nama: e.target.value}))} className="w-full border p-2.5 rounded-xl text-sm outline-none focus:border-blue-500" placeholder="Nama Siswa"/></div>
+                        <div className="lg:col-span-1"><label className="block text-xs font-bold text-slate-600 mb-1">URL Foto Profil</label><input type="text" value={form.urlFoto} onChange={e=>setForm(Object.assign({}, form, {urlFoto: e.target.value}))} className="w-full border p-2.5 rounded-xl text-sm outline-none focus:border-blue-500" placeholder="https://..."/></div>
+                        <div className="lg:col-span-1"><label className="block text-xs font-bold text-slate-600 mb-1">Gender</label><select value={form.gender} onChange={e=>setForm(Object.assign({}, form, {gender: e.target.value}))} className="w-full border p-2.5 rounded-xl text-sm outline-none focus:border-blue-500"><option value="L">Laki-laki</option><option value="P">Perempuan</option></select></div>
+                        <div className="lg:col-span-1 flex gap-2">
+                            {editId && <button type="button" onClick={()=>{setEditId(null); setForm({nisn:'',nama:'',gender:'L',urlFoto:''})}} className="flex-1 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-sm font-bold transition">Batal</button>}
+                            <button type="submit" className={`flex-1 py-2.5 ${theme.bg} ${theme.hover} text-white rounded-xl text-sm font-bold shadow-md transition`}>{editId ? 'Simpan' : 'Tambah'}</button>
+                        </div>
+                    </form>
+
+                    <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
+                        <table className="w-full text-left text-sm print-border-black print-w-full">
+                            <thead className="bg-slate-50 border-b">
+                                <tr>
+                                    <th className="p-4 w-16 text-center font-bold">No</th>
+                                    <th className="p-4 font-bold">Profil / QR</th>
+                                    <th className="p-4 font-bold">NISN</th>
+                                    <th className="p-4 font-bold">Nama Lengkap</th>
+                                    <th className="p-4 text-center font-bold">L/P</th>
+                                    <th className="p-4 text-center print-hidden font-bold">Aksi</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y">
+                                {students.length === 0 ? <tr><td colSpan="6" className="p-8 text-center text-slate-400">Belum ada data siswa.</td></tr> : students.map((s, i) => (
+                                    <tr key={s.id} className="hover:bg-slate-50 transition">
+                                        <td className="p-4 text-center font-medium">{i + 1}</td>
+                                        <td className="p-4">
+                                            <div className="flex items-center gap-3">
+                                                {s.urlFoto ? <img src={parseImageUrl(s.urlFoto)} className="w-12 h-12 rounded-full object-cover border-2 shadow-sm" onError={(e)=>{e.target.style.display='none'}} /> : <div className="w-12 h-12 rounded-full bg-slate-200 flex items-center justify-center font-bold text-slate-500 text-lg">{s.nama.charAt(0)}</div>}
+                                                <img src={`https://api.qrserver.com/v1/create-qr-code/?size=50x50&data=${s.nisn}`} alt="QR" className="w-12 h-12 border rounded-lg p-0.5 shadow-sm" />
+                                            </div>
+                                        </td>
+                                        <td className="p-4 font-mono text-slate-500 font-medium">{s.nisn}</td>
+                                        <td className="p-4 font-bold text-slate-800">{s.nama}</td>
+                                        <td className="p-4 text-center font-bold">{s.gender}</td>
+                                        <td className="p-4 text-center space-x-2 print-hidden">
+                                            <button onClick={() => {setForm({nisn: s.nisn, nama: s.nama, gender: s.gender, urlFoto: s.urlFoto || ''}); setEditId(s.id);}} className={`${theme.text} bg-slate-100 hover:bg-slate-200 p-2 rounded-lg transition`}><i className="fa-solid fa-pen-to-square"></i></button>
+                                            <button onClick={() => hapus(s.id)} className="text-rose-500 bg-rose-50 hover:bg-rose-100 p-2 rounded-lg transition"><i className="fa-solid fa-trash-can"></i></button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        }
+
+        function AbsensiView({ data, updateData, theme, showToast }) {
+            const { students, absensi } = data;
+            const [dateStr, setDateStr] = useState(new Date().toISOString().split('T')[0]);
+            const [showScanner, setShowScanner] = useState(false);
+            const [scanInput, setScanInput] = useState('');
+            const scanRef = useRef(null);
+
+            const handleStatus = (id, st) => {
+                const updated = Object.assign({}, absensi);
+                if (!updated[dateStr]) updated[dateStr] = {};
+                updated[dateStr][id] = st;
+                updateData('absensi', updated);
+            };
+
+            const handleScan = (e) => {
+                e.preventDefault();
+                const target = students.find(s => s.nisn === scanInput);
+                if (target) {
+                    handleStatus(target.id, 'Hadir');
+                    showToast(`✅ Berhasil! ${target.nama} Hadir.`, "Scan Berhasil");
+                } else {
+                    showToast('❌ NISN tidak ditemukan!', "Gagal");
+                }
+                setScanInput('');
+                if (scanRef.current) scanRef.current.focus();
+            };
+
+            const exportAbsensi = (months) => {
+                const end = new Date(); const start = new Date(); start.setMonth(start.getMonth() - months);
+                const activeDates = Object.keys(absensi).filter(d => {
+                    const dateObj = new Date(d); return dateObj >= start && dateObj <= end;
+                }).sort();
+
+                const exportData = students.map(s => {
+                    const row = { NISN: s.nisn, 'Nama Siswa': s.nama };
+                    let h=0, sk=0, i=0, a=0;
+                    activeDates.forEach(d => {
+                        const st = absensi[d] && absensi[d][s.id] ? absensi[d][s.id] : '-';
+                        row[d] = st;
+                        if(st==='Hadir') h++; else if(st==='Sakit') sk++; else if(st==='Izin') i++; else if(st==='Alpa') a++;
+                    });
+                    row['Total Hadir'] = h; row['Total Sakit'] = sk; row['Total Izin'] = i; row['Total Alpa'] = a;
+                    return row;
+                });
+                const ws = XLSX.utils.json_to_sheet(exportData);
+                const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Rekap");
+                XLSX.writeFile(wb, `Rekap_Absensi_${months}_Bulan.xlsx`);
+            };
+
+            const importAbsensi = (e) => {
+                const file = e.target.files[0]; if(!file) return;
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    const wb = XLSX.read(evt.target.result, {type: 'binary'});
+                    const rowData = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+                    const newAbs = Object.assign({}, absensi);
+                    rowData.forEach(row => {
+                        const std = students.find(s => s.nisn == row.NISN);
+                        if(std) {
+                            Object.keys(row).forEach(k => {
+                                if (k.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                                    if(!newAbs[k]) newAbs[k] = {};
+                                    newAbs[k][std.id] = row[k];
+                                }
+                            });
+                        }
+                    });
+                    updateData('absensi', newAbs);
+                    showToast("Rekap absensi berhasil diimpor", "Berhasil");
+                };
+                reader.readAsBinaryString(file); e.target.value = null;
+            };
+
+            return (
+                <div className="space-y-6 fade-in">
+                    <div className="flex flex-col gap-4 print-hidden">
+                        <div className="flex flex-wrap justify-between gap-4 items-center">
+                            <h2 className="text-2xl font-bold">Rekap Absensi Harian</h2>
+                            <div className="flex gap-2">
+                                <input type="date" value={dateStr} onChange={e=>setDateStr(e.target.value)} className="border-2 p-2.5 rounded-xl text-sm font-bold bg-white outline-none focus:border-blue-500" />
+                                <button onClick={() => setShowScanner(true)} className={`${theme.bg} ${theme.hover} text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-md transition`}><i className="fa-solid fa-qrcode"></i> Scan QR</button>
+                            </div>
+                        </div>
+                        <div className="bg-white p-4 rounded-xl border shadow-sm flex flex-wrap items-center gap-3">
+                            <span className="text-sm font-bold text-slate-600"><i className="fa-solid fa-file-excel mr-2 text-emerald-600"></i>Rekap:</span>
+                            <button onClick={() => exportAbsensi(1)} className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg text-sm font-bold transition">1 Bulan</button>
+                            <button onClick={() => exportAbsensi(3)} className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg text-sm font-bold transition">3 Bulan</button>
+                            <button onClick={() => exportAbsensi(6)} className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg text-sm font-bold transition">6 Bulan</button>
+                            <div className="flex-1"></div>
+                            <button onClick={() => document.getElementById('up-abs').click()} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition"><i className="fa-solid fa-upload mr-2"></i>Import Excel</button>
+                            <input type="file" id="up-abs" accept=".xlsx" className="hidden" onChange={importAbsensi} />
+                        </div>
+                    </div>
+
+                    {showScanner && (
+                        <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4 print-hidden fade-in">
+                            <div className="bg-white p-6 rounded-3xl w-full max-w-sm shadow-2xl relative overflow-hidden">
+                                <div className="flex justify-between items-center mb-6">
+                                    <h3 className="font-black text-xl">Scan QR Siswa</h3>
+                                    <button onClick={() => setShowScanner(false)} className="text-slate-400 hover:text-slate-800"><i className="fa-solid fa-xmark text-2xl"></i></button>
+                                </div>
+                                <div className="w-full aspect-square bg-slate-900 rounded-2xl flex items-center justify-center relative overflow-hidden mb-6 border-4 border-slate-200 shadow-inner">
+                                    <i className="fa-solid fa-camera text-slate-600 text-6xl"></i>
+                                    <div className="scan-line"></div>
+                                </div>
+                                <form onSubmit={handleScan}>
+                                    <input autoFocus ref={scanRef} type="text" value={scanInput} onChange={e=>setScanInput(e.target.value)} placeholder="Tembak alat scan ke sini (Ketik NISN)" className="w-full border-2 border-slate-200 p-4 rounded-xl text-center font-bold outline-none focus:border-blue-500 bg-slate-50" />
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
+                        <table className="w-full text-left text-sm print-border-black">
+                            <thead className="bg-slate-50 border-b">
+                                <tr><th className="p-4 font-bold">Nama Siswa</th><th className="p-4 text-center font-bold">Status Kehadiran ({dateStr})</th></tr>
+                            </thead>
+                            <tbody className="divide-y">
+                                {students.map(s => {
+                                    const currentStatus = absensi[dateStr] && absensi[dateStr][s.id] ? absensi[dateStr][s.id] : null;
+                                    return (
+                                        <tr key={s.id}>
+                                            <td className="p-4 font-bold text-slate-800">{s.nama}</td>
+                                            <td className="p-4">
+                                                <div className="flex justify-center gap-2">
+                                                    {['Hadir', 'Sakit', 'Izin', 'Alpa'].map(st => (
+                                                        <button key={st} onClick={() => handleStatus(s.id, st)}
+                                                            className={`px-4 py-1.5 rounded-lg text-xs font-bold border transition ${currentStatus === st ? `${theme.bg} text-white border-transparent shadow-md` : 'bg-white text-slate-500 hover:bg-slate-100'}`}>{st}</button>
+                                                    ))}
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        }
+
+        function LegerView({ data, updateData, theme, showToast, activeRole, showConfirm }) {
+            const { students, leger, legerCols } = data;
+            const [isEditCols, setIsEditCols] = useState(false);
+            
+            const defaultColumns = activeRole === 'guru_mapel' 
+                ? ['Tugas 1', 'Tugas 2', 'UH 1', 'UTS', 'UAS'] 
+                : ['MTK', 'IPA', 'IPS', 'B.IND', 'B.ING', 'PKN', 'AGAMA'];
+            
+            const columns = legerCols || defaultColumns;
+
+            const handleChange = (id, m, val) => {
+                const updated = Object.assign({}, leger);
+                if (!updated[id]) updated[id] = {};
+                updated[id][m] = val;
+                updateData('leger', updated);
+            };
+
+            const handleAddCol = () => {
+                const newCol = prompt("Masukkan nama Mapel / Tugas baru:");
+                if(newCol && newCol.trim()) {
+                    if(columns.includes(newCol.trim())) return showToast("Nama tersebut sudah ada!", "Gagal");
+                    updateData('legerCols', [...columns, newCol.trim()]);
+                }
+            };
+
+            const handleEditCol = (idx) => {
+                const oldName = columns[idx];
+                const newName = prompt("Ubah nama Mapel / Tugas:", oldName);
+                if(newName && newName.trim() && newName.trim() !== oldName) {
+                    if(columns.includes(newName.trim())) return showToast("Nama tersebut sudah ada!", "Gagal");
+                    
+                    const newCols = [...columns];
+                    newCols[idx] = newName.trim();
+                    
+                    const newLeger = Object.assign({}, leger);
+                    Object.keys(newLeger).forEach(studentId => {
+                        if (newLeger[studentId][oldName] !== undefined) {
+                            newLeger[studentId][newName.trim()] = newLeger[studentId][oldName];
+                            delete newLeger[studentId][oldName];
+                        }
+                    });
+                    
+                    updateData('legerCols', newCols);
+                    updateData('leger', newLeger);
+                }
+            };
+
+            const handleDeleteCol = (idx) => {
+                const colName = columns[idx];
+                showConfirm(`Hapus kolom "${colName}"? Semua nilai pada kolom ini akan ikut terhapus.`, () => {
+                    const newCols = columns.filter((_, i) => i !== idx);
+                    const newLeger = Object.assign({}, leger);
+                    Object.keys(newLeger).forEach(studentId => {
+                        if (newLeger[studentId][colName] !== undefined) {
+                            delete newLeger[studentId][colName];
+                        }
+                    });
+                    updateData('legerCols', newCols);
+                    updateData('leger', newLeger);
+                });
+            };
+
+            const exportExcel = () => {
+                const exData = students.map(s => {
+                    const row = { NISN: s.nisn, 'Nama Siswa': s.nama };
+                    columns.forEach(m => row[m] = leger[s.id] && leger[s.id][m] ? leger[s.id][m] : '');
+                    return row;
+                });
+                const ws = XLSX.utils.json_to_sheet(exData);
+                const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, activeRole === 'guru_mapel' ? "Buku_Nilai" : "Leger_Nilai");
+                XLSX.writeFile(wb, activeRole === 'guru_mapel' ? "Buku_Nilai_Mapel.xlsx" : "Leger_Nilai.xlsx");
+            };
+
+            const importExcel = (e) => {
+                const file = e.target.files[0]; if(!file) return;
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    const wb = XLSX.read(evt.target.result, {type: 'binary'});
+                    const rowData = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+                    
+                    if(rowData.length > 0) {
+                        // Otomatis menyesuaikan kolom berdasarkan file Excel
+                        const importedCols = Object.keys(rowData[0]).filter(k => k !== 'NISN' && k !== 'Nama Siswa' && k !== 'Total');
+                        updateData('legerCols', importedCols);
+                        
+                        const newLeger = Object.assign({}, leger);
+                        rowData.forEach(row => {
+                            const std = students.find(s => s.nisn == row.NISN);
+                            if(std) {
+                                if(!newLeger[std.id]) newLeger[std.id] = {};
+                                importedCols.forEach(m => { if(row[m] !== undefined && row[m] !== '') newLeger[std.id][m] = row[m]; });
+                            }
+                        });
+                        updateData('leger', newLeger);
+                        showToast("Kolom dan Nilai berhasil disesuaikan mengikuti file Excel!", "Sukses");
+                    }
+                };
+                reader.readAsBinaryString(file); e.target.value = null;
+            };
+
+            return (
+                <div className="space-y-6 fade-in">
+                    <div className="flex flex-wrap justify-between gap-4 items-center print-hidden">
+                        <h2 className="text-2xl font-bold">{activeRole === 'guru_mapel' ? 'Buku Nilai Mata Pelajaran' : 'Leger Nilai Kelas'}</h2>
+                        <div className="flex flex-wrap gap-2">
+                            <button onClick={() => setIsEditCols(!isEditCols)} className={`${isEditCols ? 'bg-slate-500 hover:bg-slate-600' : 'bg-amber-500 hover:bg-amber-600'} text-white px-4 py-2 rounded-xl text-sm font-bold shadow-sm transition flex items-center gap-2`}>
+                                <i className={`fa-solid ${isEditCols ? 'fa-check' : 'fa-pen-to-square'}`}></i> {isEditCols ? 'Selesai Edit' : 'Edit Kolom'}
+                            </button>
+                            {isEditCols ? (
+                                <button onClick={handleAddCol} className={`bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-sm font-bold shadow-sm transition flex items-center gap-2`}>
+                                    <i className="fa-solid fa-plus"></i> Tambah Kolom
+                                </button>
+                            ) : (
+                                <ExcelButtons onExport={exportExcel} onImport={importExcel} currentTheme={theme} />
+                            )}
+                        </div>
+                    </div>
+                    <div className="bg-white rounded-2xl shadow-sm border overflow-x-auto print-w-full">
+                        <table className="w-full text-left text-sm print-border-black print-w-full">
+                            <thead className="bg-slate-50 border-b">
+                                <tr>
+                                    <th className="p-3 border-r font-bold w-48 align-middle">Nama Siswa</th>
+                                    {columns.map((m, i) => (
+                                        <th key={m} className="p-3 text-center border-r font-bold w-24 min-w-[80px] align-middle">
+                                            <span className="block truncate">{m}</span>
+                                            {isEditCols && (
+                                                <div className="print-hidden flex justify-center gap-1 mt-2">
+                                                    <button onClick={() => handleEditCol(i)} className="text-blue-500 bg-blue-50 hover:bg-blue-200 p-1.5 rounded-md text-xs transition" title="Ubah Nama"><i className="fa-solid fa-pen"></i></button>
+                                                    <button onClick={() => handleDeleteCol(i)} className="text-rose-500 bg-rose-50 hover:bg-rose-200 p-1.5 rounded-md text-xs transition" title="Hapus Kolom"><i className="fa-solid fa-trash-can"></i></button>
+                                                </div>
+                                            )}
+                                        </th>
+                                    ))}
+                                    <th className="p-3 text-center font-bold w-20 align-middle">Total</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y">
+                                {students.map(s => {
+                                    const nilai = leger[s.id] || {};
+                                    const total = columns.reduce((sum, m) => sum + (Number(nilai[m]) || 0), 0);
+                                    return (
+                                        <tr key={s.id} className="hover:bg-blue-50/30">
+                                            <td className="p-3 border-r font-bold text-slate-700 truncate">{s.nama}</td>
+                                            {columns.map(m => (
+                                                <td key={m} className="border-r p-0 relative">
+                                                    <input type="number" value={nilai[m] || ''} onChange={e=>handleChange(s.id, m, e.target.value)} className="w-full h-full p-3 text-center bg-transparent outline-none focus:bg-blue-50 focus:ring-inset focus:ring-2 focus:ring-blue-500 print-hidden" placeholder="-" />
+                                                    <span className="hidden print:block text-center">{nilai[m] || '-'}</span>
+                                                </td>
+                                            ))}
+                                            <td className="p-3 text-center font-black text-slate-800 bg-slate-50">{total}</td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        }
+
+        function JadwalView({ data, updateData, theme, showToast }) {
+            const { jadwal } = data;
+            const defaultJam = ['07:00-07:45', '07:45-08:30', '08:30-09:15', '09:15-09:45 (Istirahat)', '09:45-10:30', '10:30-11:15', '11:15-12:00'];
+            const jam = jadwal.times || defaultJam; // Mengambil jam dinamis atau bawaan
+            const hari = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat'];
+
+            const handleChange = (h, i, val) => {
+                const updated = Object.assign({}, jadwal);
+                updated[`${h}_${i}`] = val;
+                updateData('jadwal', updated);
+            };
+
+            const handleTimeChange = (i, val) => {
+                const updated = Object.assign({}, jadwal);
+                const newTimes = [...jam];
+                newTimes[i] = val;
+                updated.times = newTimes;
+                updateData('jadwal', updated);
+            };
+
+            const addRow = () => {
+                const updated = Object.assign({}, jadwal);
+                updated.times = [...jam, 'Jam Baru'];
+                updateData('jadwal', updated);
+            };
+
+            const removeRow = (idx) => {
+                const updated = Object.assign({}, jadwal);
+                updated.times = jam.filter((_, i) => i !== idx);
+                const newJadwal = { times: updated.times };
+                hari.forEach(h => {
+                    let newIdx = 0;
+                    for (let i = 0; i < jam.length; i++) {
+                        if (i !== idx) {
+                            if (updated[`${h}_${i}`]) {
+                                newJadwal[`${h}_${newIdx}`] = updated[`${h}_${i}`];
+                            }
+                            newIdx++;
+                        }
+                    }
+                });
+                updateData('jadwal', newJadwal);
+            };
+
+            const exportExcel = () => {
+                const exData = jam.map((j, i) => {
+                    const row = { Waktu: j };
+                    hari.forEach(h => row[h] = jadwal[`${h}_${i}`] || (j.toLowerCase().includes('istirahat') ? 'ISTIRAHAT' : ''));
+                    return row;
+                });
+                const ws = XLSX.utils.json_to_sheet(exData);
+                const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Jadwal");
+                XLSX.writeFile(wb, "Jadwal_Pelajaran.xlsx");
+            };
+
+            const importExcel = (e) => {
+                const file = e.target.files[0]; if(!file) return;
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    const wb = XLSX.read(evt.target.result, {type: 'binary'});
+                    const rowData = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+                    const newJad = {};
+                    
+                    const importedTimes = rowData.map(row => row['Waktu'] || '00:00-00:00');
+                    newJad.times = importedTimes;
+                    
+                    rowData.forEach((row, i) => {
+                        hari.forEach(h => { if(row[h] && row[h] !== 'ISTIRAHAT') newJad[`${h}_${i}`] = row[h]; });
+                    });
+                    updateData('jadwal', newJad);
+                    showToast("Jam & Mapel berhasil diimpor mengikuti format Excel!", "Sukses");
+                };
+                reader.readAsBinaryString(file); e.target.value = null;
+            };
+
+            return (
+                <div className="space-y-6 fade-in">
+                    <div className="flex flex-wrap justify-between gap-4 items-center print-hidden">
+                        <h2 className="text-2xl font-bold">Jadwal Pelajaran Interaktif</h2>
+                        <ExcelButtons onExport={exportExcel} onImport={importExcel} currentTheme={theme} />
+                    </div>
+                    <div className="bg-white rounded-2xl shadow-sm border overflow-x-auto">
+                        <table className="w-full text-center text-sm table-fixed print-border-black">
+                            <thead className="bg-slate-50 border-b">
+                                <tr>
+                                    <th className="p-3 border-r w-40">Waktu</th>
+                                    {hari.map(h => <th key={h} className="p-3 border-r">{h}</th>)}
+                                    <th className="p-3 w-16 print-hidden">Aksi</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y">
+                                {jam.map((j, i) => {
+                                    const isRest = j.toLowerCase().includes('istirahat');
+                                    return (
+                                        <tr key={i} className="hover:bg-slate-50 transition-colors">
+                                            <td className="border-r relative bg-slate-50 p-0">
+                                                <input type="text" value={j} onChange={e=>handleTimeChange(i, e.target.value)} className="w-full h-full p-4 text-center bg-transparent outline-none focus:bg-amber-50 focus:ring-inset focus:ring-2 focus:ring-amber-400 font-bold text-slate-600 text-xs print-hidden" placeholder="Waktu/Jam" />
+                                                <span className="hidden print:block font-bold text-slate-600 text-xs p-3">{j}</span>
+                                            </td>
+                                            {isRest ? (
+                                                <td colSpan="5" className="p-3 bg-slate-100 font-black tracking-widest text-slate-400">ISTIRAHAT</td>
+                                            ) : hari.map(h => (
+                                                <td key={h} className="border-r p-0 relative">
+                                                    <input type="text" value={jadwal[`${h}_${i}`] || ''} onChange={e=>handleChange(h, i, e.target.value)} className="w-full h-full p-4 text-center bg-transparent outline-none focus:bg-amber-50 focus:ring-inset focus:ring-2 focus:ring-amber-400 font-bold text-slate-700 print-hidden uppercase" placeholder="Ketik Mapel..." />
+                                                    <span className="hidden print:block uppercase font-bold p-3">{jadwal[`${h}_${i}`] || '-'}</span>
+                                                </td>
+                                            ))}
+                                            <td className="p-2 print-hidden align-middle">
+                                                <button onClick={() => removeRow(i)} className="text-rose-400 hover:text-rose-600 hover:bg-rose-50 p-2 rounded-lg transition" title="Hapus Baris">
+                                                    <i className="fa-solid fa-trash-can"></i>
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                    <div className="print-hidden flex justify-center">
+                        <button onClick={addRow} className={`px-6 py-2.5 rounded-xl border-2 border-dashed ${theme.text} ${theme.border} hover:bg-slate-50 font-bold text-sm transition flex items-center gap-2`}>
+                            <i className="fa-solid fa-plus"></i> Tambah Baris Waktu
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        // --- MENGGABUNGKAN EKSKUL, KOKURIKULER, HOME VISIT, KONTAK & TUGAS (Template Ringkas) ---
+        function GenericTable({ title, fields, dataKey, dataState, updateData, students, theme, showConfirm, showExcel }) {
+            const [form, setForm] = useState({});
+            
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                updateData(dataKey, [...(dataState || []), Object.assign({}, form, {id: Date.now().toString()})]);
+                setForm({});
+            };
+            
+            const hapus = (id) => showConfirm('Hapus data ini?', () => updateData(dataKey, (dataState || []).filter(d => d.id !== id)));
+
+            const exportExcel = () => {
+                const exData = (dataState || []).map(d => {
+                    const row = {};
+                    fields.forEach(f => row[f.label] = d[f.key] || '');
+                    return row;
+                });
+                const ws = XLSX.utils.json_to_sheet(exData);
+                const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, title);
+                XLSX.writeFile(wb, `${title.replace(/ /g, '_')}.xlsx`);
+            };
+
+            const importExcel = (e) => {
+                const file = e.target.files[0]; if(!file) return;
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    const wb = XLSX.read(evt.target.result, {type: 'binary'});
+                    const rowData = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+                    
+                    const newData = rowData.map((d,i) => {
+                        const obj = { id: Date.now().toString() + i };
+                        fields.forEach(f => obj[f.key] = d[f.label] || '');
+                        return obj;
+                    });
+                    
+                    updateData(dataKey, [...(dataState || []), ...newData]);
+                    // Tampilkan toast sederhana (karena fungsi ini dilempar dari App, asumsikan ada window.alert kalau tidak ada props)
+                    alert("Data berhasil diimpor!");
+                };
+                reader.readAsBinaryString(file); e.target.value = null;
+            };
+
+            return (
+                <div className="space-y-6 fade-in">
+                    <div className="flex justify-between items-center print-hidden">
+                        <h2 className="text-2xl font-bold">{title}</h2>
+                        {showExcel && <ExcelButtons onExport={exportExcel} onImport={importExcel} currentTheme={theme} />}
+                    </div>
+                    <form onSubmit={handleSubmit} className="bg-white p-6 rounded-2xl shadow-sm border print-hidden grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                        {fields.map(f => (
+                            <div key={f.key} className={f.full ? 'md:col-span-4' : ''}>
+                                <label className="block text-xs font-bold text-slate-600 mb-1">{f.label}</label>
+                                {f.type === 'select-student' ? (
+                                    <select required value={form[f.key]||''} onChange={e=>setForm(Object.assign({}, form, {[f.key]: e.target.value}))} className="w-full border p-2.5 rounded-xl text-sm outline-none">
+                                        <option value="">-- Pilih Siswa --</option>
+                                        {students.map(s => <option key={s.id} value={s.nama}>{s.nama}</option>)}
+                                    </select>
+                                ) : (
+                                    <input required type={f.type||'text'} value={form[f.key]||''} onChange={e=>setForm(Object.assign({}, form, {[f.key]: e.target.value}))} className="w-full border p-2.5 rounded-xl text-sm outline-none" placeholder={f.placeholder}/>
+                                )}
+                            </div>
+                        ))}
+                        <button type="submit" className={`md:col-span-4 py-3 ${theme.bg} ${theme.hover} text-white rounded-xl text-sm font-bold shadow-md`}>Tambah Data</button>
+                    </form>
+                    <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
+                        <table className="w-full text-left text-sm print-border-black">
+                            <thead className="bg-slate-50 border-b">
+                                <tr>
+                                    {fields.map(f => <th key={f.key} className="p-4 font-bold">{f.label}</th>)}
+                                    <th className="p-4 text-center font-bold print-hidden">Aksi</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y">
+                                {(dataState || []).length === 0 ? <tr><td colSpan={fields.length + 1} className="p-4 text-center text-slate-400">Belum ada data.</td></tr> : (dataState || []).map((d, i) => (
+                                    <tr key={i} className="hover:bg-slate-50">
+                                        {fields.map(f => (
+                                            <td key={f.key} className="p-4 font-medium">
+                                                {f.isLink ? <a href={d[f.key]} target="_blank" className="text-blue-600 underline"><i className="fa-solid fa-link mr-1"></i>Buka Link</a> : d[f.key]}
+                                            </td>
+                                        ))}
+                                        <td className="p-4 text-center print-hidden">
+                                            <button onClick={()=>hapus(d.id)} className="text-rose-500 bg-rose-50 hover:bg-rose-100 p-2 rounded-lg transition"><i className="fa-solid fa-trash-can"></i></button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        }
+
+        function EkskulView(props) {
+            return <GenericTable title="Data Ekstrakurikuler" showExcel={true} dataKey="ekskul" dataState={props.data.ekskul} fields={[{key:'siswa', label:'Nama Siswa', type:'select-student'}, {key:'kegiatan', label:'Kegiatan (Cth: Pramuka)'}, {key:'nilai', label:'Nilai / Predikat'}]} {...props} students={props.data.students}/>;
+        }
+        function KokurikulerView(props) {
+            return <GenericTable title="Data Kokurikuler / Proyek (P5)" showExcel={true} dataKey="kokurikuler" dataState={props.data.kokurikuler} fields={[{key:'siswa', label:'Nama Siswa', type:'select-student'}, {key:'tema', label:'Tema / Topik (Cth: Kearifan Lokal)'}, {key:'kegiatan', label:'Kegiatan Proyek'}, {key:'nilai', label:'Catatan / Predikat'}]} {...props} students={props.data.students}/>;
+        }
+        function HomeVisitView(props) {
+            return <GenericTable title="Catatan Home Visit" dataKey="homevisit" dataState={props.data.homevisit} fields={[{key:'tanggal', label:'Tanggal', type:'date'}, {key:'siswa', label:'Siswa', type:'select-student'}, {key:'kasus', label:'Masalah / Tujuan', full:true}, {key:'hasil', label:'Hasil Kesepakatan', full:true}]} {...props} students={props.data.students}/>;
+        }
+        function KontakView(props) {
+            return <GenericTable title="Kontak & Grup Wali Murid" dataKey="kontak" dataState={props.data.kontak} fields={[{key:'nama', label:'Nama Orang Tua/Grup'}, {key:'nomor', label:'Nomor WhatsApp (Cth: 6281...)'}, {key:'keterangan', label:'Keterangan (Ortu Siswa X)'}]} {...props} students={props.data.students}/>;
+        }
+        function TugasView(props) {
+            return <GenericTable title="Manajemen Tugas & Google Drive" dataKey="tugas" dataState={props.data.tugas} fields={[{key:'mapel', label:'Mata Pelajaran'}, {key:'judul', label:'Judul Tugas'}, {key:'link', label:'Link Google Drive Folder', isLink:true}]} {...props} students={props.data.students}/>;
+        }
+
+        function CanvaView({ theme }) {
+            const tpls = [
+                {t:'Sertifikat', c:'bg-blue-100', ic:'fa-award'}, 
+                {t:'Jadwal Piket', c:'bg-emerald-100', ic:'fa-broom'}, 
+                {t:'Struktur Kelas', c:'bg-amber-100', ic:'fa-sitemap'}
+            ];
+            
+            const lkpdBank = [
+                { mapel: 'Matematika', kelas: 'Kelas 1-6', judul: 'LKPD Bilangan Cacah & Pecahan' },
+                { mapel: 'Ilmu Pengetahuan Alam (IPA)', kelas: 'Kelas 4-6', judul: 'LKPD Tata Surya & Ekosistem' },
+                { mapel: 'Bahasa Indonesia', kelas: 'Kelas 1-6', judul: 'LKPD Teks Narasi & Puisi' },
+                { mapel: 'Pendidikan Pancasila', kelas: 'Kelas 1-6', judul: 'LKPD Nilai-Nilai Pancasila' },
+                { mapel: 'Ilmu Pengetahuan Sosial (IPS)', kelas: 'Kelas 4-6', judul: 'LKPD Peta & Keragaman Budaya' },
+                { mapel: 'PJOK', kelas: 'Kelas 1-6', judul: 'LKPD Senam Lantai & Kebugaran' },
+                { mapel: 'Bahasa Inggris', kelas: 'Kelas 4-6', judul: 'LKPD Vocabulary & Simple Tense' },
+                { mapel: 'Seni Budaya', kelas: 'Kelas 1-6', judul: 'LKPD Menggambar & Kerajinan' }
+            ];
+
+            const handleDownloadLKPD = (lkpd) => {
+                // Membuat fungsi simulasi unduh file teks. 
+                // (Untuk aplikasi nyata, ganti Blob text ini dengan URL File PDF Google Drive Asli)
+                const element = document.createElement("a");
+                const file = new Blob([`=======================================\nLEMBAR KERJA PESERTA DIDIK (LKPD)\n=======================================\n\nMata Pelajaran : ${lkpd.mapel}\nSasaran Kelas  : ${lkpd.kelas}\nMateri Utama   : ${lkpd.judul}\n\n(Ini adalah file unduhan simulasi. Anda dapat mengganti fungsi ini dengan tautan Google Drive / PDF asli Anda di dalam kode.)`], {type: 'text/plain'});
+                element.href = URL.createObjectURL(file);
+                element.download = `LKPD_${lkpd.mapel.replace(/ /g, '_')}.txt`;
+                document.body.appendChild(element); 
+                element.click();
+                document.body.removeChild(element);
+            };
+
+            return (
+                <div className="space-y-10 fade-in print-hidden">
+                    <div>
+                        <h2 className="text-2xl font-bold mb-4">Template Administrasi Canva</h2>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            {tpls.map((t,i) => (
+                                <div key={i} className="bg-white border rounded-2xl overflow-hidden shadow-sm hover:shadow-lg transition">
+                                    <div className={`h-40 ${t.c} flex items-center justify-center`}><i className={`fa-solid ${t.ic} text-5xl opacity-30`}></i></div>
+                                    <div className="p-5 text-center">
+                                        <h3 className="font-bold text-lg mb-3">{t.t}</h3>
+                                        <button onClick={()=>window.open('https://canva.com','_blank')} className={`w-full py-3 ${theme.bg} text-white font-bold rounded-xl`}>Buka Template</button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="border-t pt-8">
+                        <div className="flex items-center gap-3 mb-6">
+                            <i className={`fa-solid fa-folder-open text-3xl ${theme.text}`}></i>
+                            <div>
+                                <h2 className="text-2xl font-bold text-slate-800">Bank LKPD (Lembar Kerja Peserta Didik)</h2>
+                                <p className="text-slate-500 text-sm">Unduh dokumen LKPD untuk semua mata pelajaran (Format siap cetak).</p>
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                             {lkpdBank.map((lkpd, i) => (
+                                 <div key={i} className="bg-white border rounded-xl p-5 hover:shadow-lg transition flex flex-col h-full">
+                                     <div className={`w-12 h-12 rounded-xl ${theme.bg} bg-opacity-10 ${theme.text} flex items-center justify-center mb-4`}>
+                                         <i className="fa-solid fa-file-pdf text-2xl"></i>
+                                     </div>
+                                     <h3 className="font-bold text-slate-800 leading-tight">{lkpd.mapel}</h3>
+                                     <p className="text-xs font-bold text-slate-400 mt-1 mb-3">{lkpd.kelas}</p>
+                                     <p className="text-sm font-medium text-slate-600 mb-6 flex-grow">{lkpd.judul}</p>
+                                     <button onClick={() => handleDownloadLKPD(lkpd)} className={`w-full py-2.5 bg-slate-50 hover:bg-slate-100 border ${theme.text} font-bold rounded-xl transition flex justify-center items-center gap-2 mt-auto`}>
+                                         <i className="fa-solid fa-download"></i> Unduh File
+                                     </button>
+                                 </div>
+                             ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function PengaturanView({ appData, updateSettings, theme, showToast, currentUser, deleteUser }) {
+            const [form, setForm] = useState(appData.settings);
+            const save = () => { updateSettings(form); showToast("Pengaturan berhasil disimpan!", "Sukses"); };
+            return (
+                <div className="space-y-6 max-w-xl fade-in print-hidden">
+                    <h2 className="text-2xl font-bold">Pengaturan Aplikasi</h2>
+                    <div className="bg-white p-8 rounded-3xl shadow-sm border space-y-6">
+                        <div>
+                            <label className="block text-sm font-bold text-slate-700 mb-3">Tema Warna UI</label>
+                            <div className="flex gap-4">
+                                {['blue', 'emerald', 'indigo', 'rose'].map(c => (
+                                    <button key={c} onClick={()=>setForm(Object.assign({}, form, {theme: c}))} className={`w-12 h-12 rounded-full flex items-center justify-center transition ${themes[c].bg} ${form.theme===c ? 'ring-4 ring-offset-2 ring-slate-300 scale-110 shadow-lg' : 'hover:scale-105'}`}>
+                                        {form.theme===c && <i className="fa-solid fa-check text-white"></i>}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-bold text-slate-700 mb-1">Nama Sekolah / Instansi</label>
+                            <input type="text" value={form.schoolName} onChange={e=>setForm(Object.assign({}, form, {schoolName: e.target.value}))} className="w-full border-2 p-3 rounded-xl font-bold" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-bold text-slate-700 mb-1">URL Logo Resmi</label>
+                            <input type="text" value={form.logo} onChange={e=>setForm(Object.assign({}, form, {logo: e.target.value}))} className="w-full border-2 p-3 rounded-xl" placeholder="https://..." />
+                        </div>
+                        <button onClick={save} className={`w-full py-4 ${theme.bg} ${theme.hover} text-white font-bold rounded-xl shadow-lg`}>Simpan Pengaturan</button>
+                    </div>
+
+                    {currentUser && currentUser.role === 'admin' && (
+                        <div className="bg-white p-8 rounded-3xl shadow-sm border space-y-4 mt-6">
+                            <h3 className="text-lg font-bold text-slate-800 border-b pb-2">Manajemen Akun Guru</h3>
+                            <div className="space-y-3">
+                                {appData.users.filter(u => u.role !== 'admin').length === 0 ? (
+                                    <p className="text-sm text-slate-500">Belum ada akun guru yang terdaftar.</p>
+                                ) : (
+                                    appData.users.filter(u => u.role !== 'admin').map(u => (
+                                        <div key={u.username} className="flex items-center justify-between bg-slate-50 p-3 rounded-xl border">
+                                            <div>
+                                                <p className="font-bold text-slate-700">{u.username}</p>
+                                                <p className="text-xs text-slate-500 uppercase font-medium">{u.role === 'guru_mapel' ? `Mapel: ${u.mapelName || '-'}` : 'Wali Kelas'}</p>
+                                            </div>
+                                            <button onClick={() => deleteUser(u.username)} className="text-rose-500 hover:text-rose-700 bg-white hover:bg-rose-50 border p-2 rounded-lg shadow-sm transition" title="Hapus Akun">
+                                                <i className="fa-solid fa-trash-can mr-1"></i> Hapus
+                                            </button>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // Render ReactDOM
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
