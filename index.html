@@ -1366,7 +1366,7 @@
         }
 
         function PerangkatView(props) {
-            const { theme, showToast } = props;
+            const { theme, showToast, settings } = props;
             const [activeSub, setActiveSub] = useState('ai'); // ai | drive | template
             
             // State for AI Generator (Modul Ajar)
@@ -1382,10 +1382,16 @@
             // Perbaikan Fungsi AI Modul Ajar
             const generateAI = async () => {
                 if (!aiPrompt.trim()) return showToast("Mohon ketik materi atau topik terlebih dahulu!", "Peringatan");
+                
+                const apiKey = settings?.apiKey;
+                if (!apiKey) {
+                    return showToast("Kunci Akses AI (API Key) belum diisi! Silakan buka menu 'Pengaturan Tema' untuk memasukkan API Key Anda.", "Error");
+                }
+
                 setIsGenerating(true);
                 try {
-                    const apiKey = ""; // Canvas otomatis akan mengisi ini di background
-                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
+                    // Menggunakan model Gemini 1.5 Flash yang lebih stabil untuk publik
+                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
                     
                     const payload = {
                         contents: [{ role: "user", parts: [{ text: `Buatkan kerangka perangkat pembelajaran (Modul Ajar / RPP) yang sangat terstruktur, praktis dan detail untuk topik berikut: ${aiPrompt}. Gunakan bahasa Indonesia baku dan format yang rapi.` }] }],
@@ -1416,10 +1422,16 @@
             // Fitur Baru: AI Pembuat Rekomendasi LKPD
             const generateLkpd = async () => {
                 if (!lkpdForm.mapel || !lkpdForm.kelas) return showToast("Mapel dan Kelas wajib diisi untuk menghasilkan LKPD!", "Peringatan");
+                
+                const apiKey = settings?.apiKey;
+                if (!apiKey) {
+                    return showToast("Kunci Akses AI (API Key) belum diisi! Silakan buka menu 'Pengaturan Tema' untuk memasukkan API Key Anda.", "Error");
+                }
+
                 setIsGeneratingLkpd(true);
                 try {
-                    const apiKey = "";
-                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
+                    // Menggunakan model Gemini 1.5 Flash yang lebih stabil untuk publik
+                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
                     
                     const payload = {
                         contents: [{ role: "user", parts: [{ text: `Buatkan 4 rekomendasi Lembar Kerja Peserta Didik (LKPD) yang kreatif dan memicu nalar kritis siswa untuk mata pelajaran ${lkpdForm.mapel} ${lkpdForm.kelas} dengan topik/materi ${lkpdForm.topik || 'yang sesuai kurikulum'}.` }] }],
@@ -1646,6 +1658,11 @@
                         <div>
                             <label className="block text-sm font-bold text-slate-700 mb-1">URL Logo Resmi</label>
                             <input type="text" value={form.logo} onChange={e=>setForm(Object.assign({}, form, {logo: e.target.value}))} className="w-full border-2 p-3 rounded-xl" placeholder="https://..." />
+                        </div>
+                        <div className="p-4 bg-blue-50 border border-blue-200 rounded-2xl">
+                            <label className="block text-sm font-bold text-blue-900 mb-1"><i className="fa-solid fa-key mr-2"></i>Kunci Akses AI (API Key Gemini)</label>
+                            <input type="password" value={form.apiKey || ''} onChange={e=>setForm(Object.assign({}, form, {apiKey: e.target.value}))} className="w-full border-2 border-blue-300 p-3 rounded-xl bg-white focus:border-blue-600 outline-none" placeholder="Ketik/Paste API Key Google Gemini..." />
+                            <p className="text-xs text-blue-700 mt-2 font-medium">Dapatkan API Key secara gratis dari <a href="https://aistudio.google.com/app/apikey" target="_blank" className="underline font-bold hover:text-blue-900">Google AI Studio</a>. Kunci ini wajib diisi agar AI bisa membalas permintaan Anda.</p>
                         </div>
                         <button onClick={save} className={`w-full py-4 ${theme.bg} ${theme.hover} text-white font-bold rounded-xl shadow-lg`}>Simpan Pengaturan</button>
                     </div>
