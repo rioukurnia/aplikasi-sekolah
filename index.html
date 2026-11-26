@@ -1345,7 +1345,7 @@
         }
 
         // ==========================================
-        // UPDATE FITUR AI MENGGUNAKAN MODEL TERBARU
+        // UPDATE FITUR AI DENGAN DETEKSI MODEL OTOMATIS (ANTI GAGAL)
         // ==========================================
         function PerangkatView(props) {
             const { theme, showToast, settings } = props;
@@ -1359,8 +1359,84 @@
             const [lkpdList, setLkpdList] = useState([]);
             const [isGeneratingLkpd, setIsGeneratingLkpd] = useState(false);
 
-            // MENGGUNAKAN MODEL STANDAR TERBARU gemini-1.5-flash
-            const MODEL_NAME = "gemini-1.5-flash";
+            // FUNGSI PINTAR: Otomatis mengambil daftar model aktif dari akun Google Anda
+            const callGeminiSmart = async (apiKey, payload) => {
+                // Daftar model generasi terbaru sebagai cadangan utama
+                let candidateModels = [
+                    "gemini-2.5-flash",
+                    "gemini-3-flash-preview",
+                    "gemini-2.0-flash",
+                    "gemini-2.5-pro",
+                    "gemini-2.0-flash-lite"
+                ];
+
+                // Cek langsung ke server Google model apa saja yang diizinkan untuk API Key ini
+                try {
+                    const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+                    if (listRes.ok) {
+                        const listData = await listRes.json();
+                        if (listData.models && Array.isArray(listData.models)) {
+                            const availableFromGoogle = listData.models
+                                .filter(m =>
+                                    m.supportedGenerationMethods &&
+                                    m.supportedGenerationMethods.includes("generateContent") &&
+                                    m.name &&
+                                    m.name.includes("gemini") &&
+                                    !m.name.includes("embedding") &&
+                                    !m.name.includes("vision") &&
+                                    !m.name.includes("tts") &&
+                                    !m.name.includes("image")
+                                )
+                                .map(m => m.name.replace("models/", ""));
+
+                            if (availableFromGoogle.length > 0) {
+                                // Prioritaskan model tipe 'flash' agar respons cepat
+                                availableFromGoogle.sort((a, b) => {
+                                    const aFlash = a.includes("flash") ? -1 : 1;
+                                    const bFlash = b.includes("flash") ? -1 : 1;
+                                    return aFlash - bFlash;
+                                });
+                                candidateModels = [...new Set([...availableFromGoogle, ...candidateModels])];
+                            }
+                        }
+                    } else {
+                        const errList = await listRes.json().catch(() => ({}));
+                        if (errList.error?.message?.toLowerCase().includes("api key not valid")) {
+                            throw new Error("API Key tidak valid. Periksa kembali kunci di menu Pengaturan Tema.");
+                        }
+                    }
+                } catch (listErr) {
+                    if (listErr.message.includes("API Key tidak valid")) {
+                        throw listErr;
+                    }
+                }
+
+                let lastErrorMsg = "Tidak ada respons dari server Google.";
+
+                // Coba setiap model yang tersedia sampai berhasil
+                for (const model of candidateModels) {
+                    try {
+                        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+                        const response = await fetch(apiUrl, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        
+                        const result = await response.json();
+                        
+                        if (response.ok && result.candidates && result.candidates.length > 0 && result.candidates[0].content) {
+                            return result.candidates[0].content.parts[0].text;
+                        } else {
+                            lastErrorMsg = result.error?.message || "Ditolak oleh server Google.";
+                        }
+                    } catch (e) {
+                        lastErrorMsg = e.message;
+                    }
+                }
+
+                throw new Error(lastErrorMsg);
+            };
 
             const generateAI = async () => {
                 if (!aiPrompt.trim()) return showToast("Mohon ketik materi atau topik terlebih dahulu!", "Peringatan");
@@ -1371,36 +1447,18 @@
                 }
 
                 setIsGenerating(true);
+                const payload = {
+                    contents: [{ role: "user", parts: [{ text: `Kamu adalah asisten guru profesional di Indonesia. Buatkan kerangka perangkat pembelajaran (Modul Ajar / RPP Kurikulum Merdeka) yang sangat terstruktur, praktis, dan detail untuk topik berikut: ${aiPrompt}. Gunakan bahasa Indonesia baku dan format yang rapi.` }] }]
+                };
+
                 try {
-                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
-                    
-                    const payload = {
-                        contents: [{ role: "user", parts: [{ text: `Kamu adalah asisten guru. Buatkan kerangka perangkat pembelajaran (Modul Ajar / RPP) yang sangat terstruktur, praktis dan detail untuk topik berikut: ${aiPrompt}. Gunakan bahasa Indonesia baku dan format yang rapi.` }] }]
-                    };
-
-                    const response = await fetch(apiUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    
-                    const result = await response.json();
-                    
-                    if (!response.ok) {
-                        console.error("API Error:", result);
-                        throw new Error(result.error?.message || "Terjadi kesalahan pada server AI.");
-                    }
-
-                    if (result.candidates && result.candidates.length > 0 && result.candidates[0].content) {
-                        setAiResult(result.candidates[0].content.parts[0].text);
-                        showToast("Perangkat pembelajaran berhasil dibuat!", "Sukses");
-                    } else {
-                        throw new Error("Respons dari server tidak sesuai format yang diharapkan.");
-                    }
-                } catch (e) {
-                    console.error("AI Fetch Error: ", e);
-                    showToast(`Gagal: ${e.message}`, "Error");
+                    const generatedText = await callGeminiSmart(apiKey, payload);
+                    setAiResult(generatedText);
+                    showToast("Perangkat pembelajaran berhasil dibuat!", "Sukses");
+                } catch (err) {
+                    showToast(`Gagal membuat modul: ${err.message}`, "Error");
                 }
+                
                 setIsGenerating(false);
             };
 
@@ -1413,45 +1471,30 @@
                 }
 
                 setIsGeneratingLkpd(true);
+                const payload = {
+                    contents: [{ role: "user", parts: [{ text: `Instruksi Sistem: Anda adalah pembuat LKPD. Selalu balas HANYA dengan format JSON array valid, tanpa penjelasan teks apapun sebelum/sesudahnya.\n\nTugas: Buatkan 4 rekomendasi Lembar Kerja Peserta Didik (LKPD) yang kreatif dan memicu nalar kritis siswa untuk mata pelajaran ${lkpdForm.mapel} ${lkpdForm.kelas} dengan topik/materi ${lkpdForm.topik || 'yang sesuai kurikulum'}. Berikan respons DALAM FORMAT JSON ARRAY dengan struktur persis seperti ini: [{"judul": "Judul LKPD", "deskripsi": "Deskripsi singkat", "konten_lengkap": "Langkah kerja detail"}]` }] }]
+                };
+
                 try {
-                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
-                    
-                    const payload = {
-                        contents: [{ role: "user", parts: [{ text: `Instruksi Sistem: Anda adalah pembuat LKPD. Selalu balas HANYA dengan format JSON array valid, tanpa penjelasan teks apapun sebelum/sesudahnya.\n\nTugas: Buatkan 4 rekomendasi Lembar Kerja Peserta Didik (LKPD) yang kreatif dan memicu nalar kritis siswa untuk mata pelajaran ${lkpdForm.mapel} ${lkpdForm.kelas} dengan topik/materi ${lkpdForm.topik || 'yang sesuai kurikulum'}. Berikan respons DALAM FORMAT JSON ARRAY dengan struktur persis seperti ini: [{"judul": "Judul LKPD", "deskripsi": "Deskripsi singkat", "konten_lengkap": "Langkah kerja detail"}]` }] }]
-                    };
-
-                    const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-                    const result = await response.json();
-                    
-                    if (!response.ok) {
-                        console.error("API Error:", result);
-                        throw new Error(result.error?.message || "Terjadi kesalahan pada server AI.");
-                    }
-
-                    if (result.candidates && result.candidates[0].content) {
-                        let jsonStr = result.candidates[0].content.parts[0].text;
-                        jsonStr = jsonStr.replace(/```json/g, '').replace(/```/g, '').trim();
-                        try {
-                            const parsed = JSON.parse(jsonStr);
-                            setLkpdList(parsed);
+                    let jsonStr = await callGeminiSmart(apiKey, payload);
+                    jsonStr = jsonStr.replace(/```json/g, '').replace(/```/g, '').trim();
+                    try {
+                        const parsed = JSON.parse(jsonStr);
+                        setLkpdList(parsed);
+                        showToast("Rekomendasi LKPD berhasil dibuat AI!", "Sukses");
+                    } catch (parseErr) {
+                        const match = jsonStr.match(/\[[\s\S]*\]/);
+                        if (match) {
+                            setLkpdList(JSON.parse(match[0]));
                             showToast("Rekomendasi LKPD berhasil dibuat AI!", "Sukses");
-                        } catch(err) {
-                            console.error("Parse Error:", err, jsonStr);
-                            const match = jsonStr.match(/\[[\s\S]*\]/);
-                            if(match) {
-                                setLkpdList(JSON.parse(match[0]));
-                                showToast("Rekomendasi LKPD berhasil dibuat AI!", "Sukses");
-                            } else {
-                                throw new Error("Gagal membaca data dari AI. Format tidak sesuai.");
-                            }
+                        } else {
+                            throw new Error("Format jawaban AI tidak sesuai JSON.");
                         }
-                    } else {
-                        throw new Error("Gagal mendapat respons AI yang valid.");
                     }
-                } catch (e) {
-                    console.error("AI LKPD Error: ", e);
-                    showToast(`Error: ${e.message}`, "Error");
+                } catch (err) {
+                    showToast(`Gagal membuat LKPD: ${err.message}`, "Error");
                 }
+                
                 setIsGeneratingLkpd(false);
             };
 
