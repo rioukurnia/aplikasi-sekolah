@@ -21,6 +21,20 @@
     <!-- SheetJS untuk Excel -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
+    <!-- Cloud SDK untuk Sinkronisasi Real-Time Lintas Perangkat -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        window.CloudSDK = {
+            initializeApp,
+            getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+            getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, getDocs
+        };
+        window.dispatchEvent(new Event('cloud-sdk-ready'));
+    </script>
+
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; background-color: #f8fafc; }
@@ -76,6 +90,29 @@
 
         const AppContext = createContext();
         
+        // --- HELPER PENYEMBUNYI API KEY ---
+        const encodeApiKey = (rawKey) => {
+            if (!rawKey) return '';
+            const trimmed = rawKey.trim();
+            if (trimmed.startsWith('ENC:')) return trimmed;
+            try {
+                return 'ENC:' + btoa(encodeURIComponent(trimmed).split('').reverse().join(''));
+            } catch (e) {
+                return trimmed;
+            }
+        };
+
+        const decodeApiKey = (storedKey) => {
+            if (!storedKey) return '';
+            if (!storedKey.startsWith('ENC:')) return storedKey;
+            try {
+                const payload = storedKey.slice(4);
+                return decodeURIComponent(atob(payload).split('').reverse().join(''));
+            } catch (e) {
+                return '';
+            }
+        };
+
         // --- HELPER UNTUK GOOGLE DRIVE IMAGE ---
         const parseImageUrl = (url) => {
             if (!url) return '';
@@ -85,6 +122,43 @@
                 return `https://drive.google.com/thumbnail?id=${match[1]}&sz=w800`;
             }
             return url;
+        };
+
+        // --- HELPER ENKRIPSI RINGAN & KONFIGURASI CLOUD ---
+        const encodeSecret = (text) => {
+            if (!text) return '';
+            try {
+                const salt = 'AK2026_';
+                return 'ENC:' + btoa(unescape(encodeURIComponent(salt + text)));
+            } catch (e) {
+                return text;
+            }
+        };
+
+        const decodeSecret = (encoded) => {
+            if (!encoded) return '';
+            if (!encoded.startsWith('ENC:')) return encoded;
+            try {
+                const raw = decodeURIComponent(escape(atob(encoded.slice(4))));
+                return raw.startsWith('AK2026_') ? raw.slice(7) : raw;
+            } catch (e) {
+                return '';
+            }
+        };
+
+        const resolveCloudConfig = () => {
+            if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                try {
+                    return typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config;
+                } catch (e) {}
+            }
+            if (window.location.hash && window.location.hash.includes('cloud=')) {
+                try {
+                    const rawHash = window.location.hash.split('cloud=')[1].split('&')[0];
+                    return JSON.parse(decodeURIComponent(atob(rawHash)));
+                } catch (e) {}
+            }
+            return null;
         };
 
         // --- MODAL / DIALOG COMPONENT ---
@@ -132,11 +206,24 @@
         // --- APLIKASI UTAMA ---
         function App() {
             const [currentUser, setCurrentUser] = useState(null);
-            const [appData, setAppData] = useState({ users: [], db: {}, settings: { theme: 'blue', logo: '', schoolName: 'AdminKelas' } });
+            const [appData, setAppData] = useState({
+                users: [{ username: 'admin', password: 'admin123', role: 'admin' }],
+                db: {},
+                settings: { theme: 'blue', logo: '', schoolName: 'Sistem Admin', apiKey: '', apiKeyEnc: '', apiKeyPassword: 'admin123' }
+            });
             const [activeTab, setActiveTab] = useState('dashboard');
             const [isSidebarOpen, setIsSidebarOpen] = useState(false);
             const [viewTeacher, setViewTeacher] = useState('');
             const [viewClass, setViewClass] = useState('');
+
+            // State Koneksi Cloud Real-Time
+            const [sdkReady, setSdkReady] = useState(Boolean(window.CloudSDK));
+            const [customConfig, setCustomConfig] = useState(() => resolveCloudConfig());
+            const [fbUser, setFbUser] = useState(null);
+            const [cloudStatus, setCloudStatus] = useState('connecting'); // 'connecting' | 'synced' | 'syncing' | 'unconfigured' | 'error'
+            const dbRef = useRef(null);
+            const authRef = useRef(null);
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
             const [dialog, setDialog] = useState({ isOpen: false, title: '', message: '', type: 'alert', onConfirm: null });
 
@@ -152,90 +239,255 @@
                 });
             };
 
+            // Tunggu modul Cloud SDK siap
             useEffect(() => {
-                const saved = localStorage.getItem('adminKelasSystemV3');
-                if (saved) {
-                    const parsed = JSON.parse(saved);
-                    if (!parsed.settings) parsed.settings = { theme: 'blue', logo: '', schoolName: 'AdminKelas' };
-                    if (!parsed.users || !Array.isArray(parsed.users) || parsed.users.length === 0) {
-                        parsed.users = [{ username: 'admin', password: 'admin123', role: 'admin' }];
-                    } else {
-                        const adminIdx = parsed.users.findIndex(u => u.role === 'admin');
-                        if (adminIdx === -1) {
-                            parsed.users.push({ username: 'admin', password: 'admin123', role: 'admin' });
-                        } else {
-                            parsed.users[adminIdx].password = 'admin123';
-                        }
-                    }
-                    if (!parsed.db) parsed.db = {};
-                    setAppData(parsed);
-                } else {
-                    setAppData({
-                        users: [{ username: 'admin', password: 'admin123', role: 'admin' }],
-                        db: {}, settings: { theme: 'blue', logo: '', schoolName: 'Sistem Admin' }
-                    });
+                if (window.CloudSDK) {
+                    setSdkReady(true);
+                    return;
                 }
-                const session = sessionStorage.getItem('currentUserV3');
-                if (session) {
-                    const user = JSON.parse(session);
-                    setCurrentUser(user);
-                    if (user.role === 'guru' || user.role === 'guru_mapel') {
-                        setViewTeacher(user.username);
-                    }
-                }
+                const onReady = () => setSdkReady(true);
+                window.addEventListener('cloud-sdk-ready', onReady);
+                return () => window.removeEventListener('cloud-sdk-ready', onReady);
             }, []);
 
+            // RULE 3: Autentikasi Cloud TERLEBIH DAHULU sebelum query/listener apapun
             useEffect(() => {
-                if (appData.users.length > 0) {
-                    localStorage.setItem('adminKelasSystemV3', JSON.stringify(appData));
+                if (!sdkReady) return;
+                if (!customConfig || !customConfig.apiKey) {
+                    setCloudStatus('unconfigured');
+                    return;
                 }
-            }, [appData]);
+
+                let cancelled = false;
+                const initCloudAuth = async () => {
+                    try {
+                        setCloudStatus('connecting');
+                        const { initializeApp, getAuth, signInWithCustomToken, signInAnonymously, getFirestore } = window.CloudSDK;
+                        const appInstance = initializeApp(customConfig, `admin-kelas-${Date.now()}`);
+                        const auth = getAuth(appInstance);
+                        const db = getFirestore(appInstance);
+                        authRef.current = auth;
+                        dbRef.current = db;
+
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            try {
+                                await signInWithCustomToken(auth, __initial_auth_token);
+                            } catch (tokenErr) {
+                                await signInAnonymously(auth);
+                            }
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+
+                        if (!cancelled) {
+                            setFbUser(auth.currentUser || { uid: 'authenticated' });
+                        }
+                    } catch (err) {
+                        if (!cancelled) {
+                            setCloudStatus('error');
+                        }
+                    }
+                };
+
+                initCloudAuth();
+                return () => { cancelled = true; };
+            }, [sdkReady, customConfig]);
+
+            // RULE 1 & RULE 2: Dengarkan perubahan data secara real-time setelah auth selesai
+            useEffect(() => {
+                if (!fbUser || !dbRef.current || !window.CloudSDK) return;
+                const { doc, collection, onSnapshot, setDoc } = window.CloudSDK;
+                const db = dbRef.current;
+
+                // 1. Listener Pengaturan Sekolah & Kunci AI
+                const settingsDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'school_state', 'settings');
+                const unsubSettings = onSnapshot(
+                    settingsDocRef,
+                    (snap) => {
+                        if (snap.exists()) {
+                            const data = snap.data();
+                            const resolvedApiKey = data.apiKeyEnc ? decodeSecret(data.apiKeyEnc) : (data.apiKey || '');
+                            setAppData(prev => Object.assign({}, prev, {
+                                settings: Object.assign({}, prev.settings, data, { apiKey: resolvedApiKey })
+                            }));
+                        } else {
+                            setDoc(settingsDocRef, {
+                                theme: 'blue',
+                                logo: '',
+                                schoolName: 'Sistem Admin',
+                                apiKeyEnc: '',
+                                apiKeyPassword: 'admin123'
+                            }, { merge: true }).catch(() => {});
+                        }
+                        setCloudStatus('synced');
+                    },
+                    () => {
+                        setCloudStatus('error');
+                    }
+                );
+
+                // 2. Listener Akun Guru & Admin
+                const usersColRef = collection(db, 'artifacts', appId, 'public', 'data', 'school_users');
+                const unsubUsers = onSnapshot(
+                    usersColRef,
+                    (snapshot) => {
+                        const loadedUsers = [];
+                        snapshot.forEach(docSnap => {
+                            const u = docSnap.data();
+                            if (u && u.username) loadedUsers.push(u);
+                        });
+
+                        const adminIdx = loadedUsers.findIndex(u => u.role === 'admin');
+                        if (adminIdx === -1) {
+                            loadedUsers.unshift({ username: 'admin', password: 'admin123', role: 'admin' });
+                        } else {
+                            loadedUsers[adminIdx].password = 'admin123';
+                        }
+
+                        setAppData(prev => Object.assign({}, prev, { users: loadedUsers }));
+                        setCloudStatus('synced');
+                    },
+                    () => {
+                        setCloudStatus('error');
+                    }
+                );
+
+                // 3. Listener Database Kelas & Nilai Guru
+                const teacherDbsColRef = collection(db, 'artifacts', appId, 'public', 'data', 'teacher_dbs');
+                const unsubTeacherDbs = onSnapshot(
+                    teacherDbsColRef,
+                    (snapshot) => {
+                        const loadedDb = {};
+                        snapshot.forEach(docSnap => {
+                            const raw = docSnap.data() || {};
+                            const parsedTeacher = Object.assign({}, initialDataTemplate, raw);
+                            if (typeof raw.jadwalJson === 'string') {
+                                try { parsedTeacher.jadwal = JSON.parse(raw.jadwalJson); } catch (e) {}
+                            }
+                            if (typeof raw.legerJson === 'string') {
+                                try { parsedTeacher.leger = JSON.parse(raw.legerJson); } catch (e) {}
+                            }
+                            if (typeof raw.absensiJson === 'string') {
+                                try { parsedTeacher.absensi = JSON.parse(raw.absensiJson); } catch (e) {}
+                            }
+                            loadedDb[docSnap.id] = parsedTeacher;
+                        });
+
+                        setAppData(prev => Object.assign({}, prev, { db: loadedDb }));
+                        setCloudStatus('synced');
+                    },
+                    () => {
+                        setCloudStatus('error');
+                    }
+                );
+
+                return () => {
+                    unsubSettings();
+                    unsubUsers();
+                    unsubTeacherDbs();
+                };
+            }, [fbUser, appId]);
 
             useEffect(() => { setViewClass(''); }, [viewTeacher]);
 
+            const syncTeacherDocToCloud = async (teacherUsername, teacherPayload) => {
+                if (!fbUser || !dbRef.current || !window.CloudSDK || !teacherUsername) return;
+                const { doc, setDoc } = window.CloudSDK;
+                try {
+                    setCloudStatus('syncing');
+                    const docRef = doc(dbRef.current, 'artifacts', appId, 'public', 'data', 'teacher_dbs', teacherUsername);
+                    const sanitized = Object.assign({}, teacherPayload);
+                    // Serialisasi map bersarang agar aman di penyimpanan cloud
+                    if (sanitized.jadwal) sanitized.jadwalJson = JSON.stringify(sanitized.jadwal);
+                    if (sanitized.leger) sanitized.legerJson = JSON.stringify(sanitized.leger);
+                    if (sanitized.absensi) sanitized.absensiJson = JSON.stringify(sanitized.absensi);
+                    await setDoc(docRef, sanitized, { merge: true });
+                    setCloudStatus('synced');
+                } catch (err) {
+                    setCloudStatus('error');
+                    showToast('Gagal menyinkronkan data ke cloud. Periksa koneksi internet Anda.', 'Gagal Sinkronisasi');
+                }
+            };
+
+            const syncCloudUser = async (userObj) => {
+                setAppData(prev => {
+                    const exists = prev.users.findIndex(u => u.username === userObj.username);
+                    const nextUsers = [...prev.users];
+                    if (exists !== -1) nextUsers[exists] = userObj;
+                    else nextUsers.push(userObj);
+                    return Object.assign({}, prev, { users: nextUsers });
+                });
+
+                if (!fbUser || !dbRef.current || !window.CloudSDK) return;
+                const { doc, setDoc } = window.CloudSDK;
+                try {
+                    setCloudStatus('syncing');
+                    const userDocRef = doc(dbRef.current, 'artifacts', appId, 'public', 'data', 'school_users', userObj.username);
+                    await setDoc(userDocRef, userObj, { merge: true });
+                    setCloudStatus('synced');
+                } catch (err) {
+                    setCloudStatus('error');
+                }
+            };
+
+            const handleConnectCustomCloud = (configObj) => {
+                try {
+                    const encoded = btoa(encodeURIComponent(JSON.stringify(configObj)));
+                    window.location.hash = `cloud=${encoded}`;
+                    setCustomConfig(configObj);
+                    showToast('Konfigurasi Cloud berhasil dihubungkan! Salin URL browser saat ini untuk dibagikan ke guru lain.', 'Cloud Terhubung');
+                } catch (e) {
+                    showToast('Format konfigurasi tidak valid.', 'Error');
+                }
+            };
+
             const getCombinedData = () => {
+                if (!viewTeacher) return Object.assign({}, initialDataTemplate);
+
                 let displayedRoleTemp = currentUser?.role;
                 if (currentUser?.role === 'admin' && viewTeacher) {
                     const vt = appData.users.find(u => u.username === viewTeacher);
                     if (vt) displayedRoleTemp = vt.role;
                 }
 
-                if (!viewTeacher) return initialDataTemplate;
-                const mainDb = appData.db[viewTeacher] || initialDataTemplate;
-
                 if (displayedRoleTemp === 'guru_mapel' && viewClass) {
-                    const classDb = appData.db[viewClass] || initialDataTemplate;
-                    return Object.assign({}, classDb, {
-                        leger: mainDb[`leger_${viewClass}`] || {},
-                        legerCols: mainDb[`legerCols_${viewClass}`] || null,
+                    const classData = Object.assign({}, initialDataTemplate, appData.db[viewClass] || {});
+                    const teacherData = Object.assign({}, initialDataTemplate, appData.db[viewTeacher] || {});
+                    return Object.assign({}, classData, {
+                        leger: teacherData[`leger_${viewClass}`] || {},
+                        legerCols: teacherData[`legerCols_${viewClass}`] || null,
+                        perangkat: teacherData.perangkat || [],
+                        tugas: teacherData.tugas || []
                     });
                 }
-                return mainDb;
+
+                return Object.assign({}, initialDataTemplate, appData.db[viewTeacher] || {});
             };
 
-            const integrateLegerToWaliKelas = (dbCopy, mapelUsername, className, mapelLeger, mapelCols) => {
-                const wkLeger = Object.assign({}, dbCopy[className].leger || {});
-                let wkLegerCols = dbCopy[className].legerCols || ['MTK', 'IPA', 'IPS', 'B.IND', 'B.ING', 'PKN', 'AGAMA'];
-                
-                if (!wkLegerCols.includes(mapelUsername)) {
-                    wkLegerCols = [...wkLegerCols, mapelUsername];
-                    dbCopy[className].legerCols = wkLegerCols;
+            const integrateLegerToWaliKelas = (dbCopy, mapelName, targetClass, mapelLeger, mapelCols) => {
+                if (!dbCopy[targetClass]) dbCopy[targetClass] = Object.assign({}, initialDataTemplate);
+                const waliData = dbCopy[targetClass];
+                if (!waliData.leger) waliData.leger = {};
+                if (!waliData.legerCols) {
+                    waliData.legerCols = ['MTK', 'IPA', 'IPS', 'B.IND', 'B.ING', 'PKN', 'AGAMA'];
                 }
-                
-                const colsToUse = mapelCols || ['Tugas 1', 'Tugas 2', 'UH 1', 'UTS', 'UAS'];
-                
-                Object.keys(mapelLeger).forEach(studentId => {
-                    if (!wkLeger[studentId]) wkLeger[studentId] = {};
-                    let total = 0, count = 0;
-                    colsToUse.forEach(c => {
-                        if (mapelLeger[studentId][c] !== undefined && mapelLeger[studentId][c] !== '' && !isNaN(mapelLeger[studentId][c])) {
-                            total += Number(mapelLeger[studentId][c]);
-                            count++;
-                        }
-                    });
-                    wkLeger[studentId][mapelUsername] = count > 0 ? Math.round(total / count) : '';
+                if (mapelName && !waliData.legerCols.includes(mapelName)) {
+                    waliData.legerCols = [...waliData.legerCols, mapelName];
+                }
+
+                Object.keys(mapelLeger || {}).forEach(studentId => {
+                    const studentScores = mapelLeger[studentId] || {};
+                    const numericVals = mapelCols
+                        .map(col => studentScores[col])
+                        .filter(val => val !== undefined && val !== '' && !isNaN(Number(val)))
+                        .map(Number);
+
+                    if (numericVals.length > 0) {
+                        const avg = Math.round(numericVals.reduce((sum, n) => sum + n, 0) / numericVals.length);
+                        if (!waliData.leger[studentId]) waliData.leger[studentId] = {};
+                        waliData.leger[studentId][mapelName] = avg;
+                    }
                 });
-                dbCopy[className].leger = wkLeger;
             };
 
             const updateCombinedData = (key, newData) => {
@@ -265,23 +517,53 @@
                             const mapelCols = key === 'legerCols' ? newData : (dbCopy[viewTeacher][`legerCols_${viewClass}`] || ['Tugas 1', 'Tugas 2', 'UH 1', 'UTS', 'UAS']);
                             
                             integrateLegerToWaliKelas(dbCopy, mapelName, viewClass, mapelLeger, mapelCols);
+
+                            syncTeacherDocToCloud(viewTeacher, {
+                                [`${key}_${viewClass}`]: newData
+                            });
+                            syncTeacherDocToCloud(viewClass, {
+                                leger: dbCopy[viewClass].leger,
+                                legerCols: dbCopy[viewClass].legerCols
+                            });
                         } else {
                             dbCopy[viewClass][key] = newData;
+                            syncTeacherDocToCloud(viewClass, { [key]: newData });
                         }
                     } else {
                         if (!dbCopy[viewTeacher]) dbCopy[viewTeacher] = Object.assign({}, initialDataTemplate);
                         dbCopy[viewTeacher][key] = newData;
+                        syncTeacherDocToCloud(viewTeacher, { [key]: newData });
                     }
                     return Object.assign({}, prev, { db: dbCopy });
                 });
             };
 
-            const updateSettings = (newSettings) => {
-                setAppData(prev => Object.assign({}, prev, { settings: Object.assign({}, prev.settings, newSettings) }));
+            const updateSettings = async (newSettings) => {
+                const plainApiKey = newSettings.apiKey !== undefined ? newSettings.apiKey : (appData.settings.apiKey || '');
+                const encryptedApiKey = plainApiKey ? encodeSecret(plainApiKey) : '';
+                const mergedSettings = Object.assign({}, appData.settings, newSettings, {
+                    apiKey: plainApiKey,
+                    apiKeyEnc: encryptedApiKey
+                });
+
+                setAppData(prev => Object.assign({}, prev, { settings: mergedSettings }));
+
+                if (!fbUser || !dbRef.current || !window.CloudSDK) return;
+                const { doc, setDoc } = window.CloudSDK;
+                try {
+                    setCloudStatus('syncing');
+                    const settingsDocRef = doc(dbRef.current, 'artifacts', appId, 'public', 'data', 'school_state', 'settings');
+                    const cloudPayload = Object.assign({}, mergedSettings);
+                    delete cloudPayload.apiKey; // Hanya simpan versi terenkripsi di cloud
+                    await setDoc(settingsDocRef, cloudPayload, { merge: true });
+                    setCloudStatus('synced');
+                } catch (err) {
+                    setCloudStatus('error');
+                }
             };
 
             const deleteUser = (username) => {
-                showConfirm(`Yakin menghapus akun "${username}"? Semua data kelas dan nilai miliknya akan ikut terhapus dari sistem.`, () => {
+                showConfirm(`Yakin menghapus akun "${username}"? Semua data kelas dan nilai miliknya akan ikut terhapus dari sistem.`, async () => {
                     setAppData(prev => {
                         const newUsers = prev.users.filter(u => u.username !== username);
                         const newDb = Object.assign({}, prev.db);
@@ -289,13 +571,24 @@
                         return Object.assign({}, prev, { users: newUsers, db: newDb });
                     });
                     if (viewTeacher === username) setViewTeacher('');
-                    showToast(`Akun guru ${username} berhasil dihapus!`, "Sukses");
+
+                    if (fbUser && dbRef.current && window.CloudSDK) {
+                        const { doc, deleteDoc } = window.CloudSDK;
+                        try {
+                            setCloudStatus('syncing');
+                            await deleteDoc(doc(dbRef.current, 'artifacts', appId, 'public', 'data', 'school_users', username));
+                            await deleteDoc(doc(dbRef.current, 'artifacts', appId, 'public', 'data', 'teacher_dbs', username));
+                            setCloudStatus('synced');
+                        } catch (e) {
+                            setCloudStatus('error');
+                        }
+                    }
+                    showToast(`Akun guru ${username} berhasil dihapus dari cloud!`, "Sukses");
                 });
             };
 
             const handleLogin = (user) => {
                 setCurrentUser(user);
-                sessionStorage.setItem('currentUserV3', JSON.stringify(user));
                 if (user.role === 'guru' || user.role === 'guru_mapel') {
                     setViewTeacher(user.username);
                 } else {
@@ -306,10 +599,20 @@
             const handleLogout = () => {
                 setCurrentUser(null);
                 setViewTeacher('');
-                sessionStorage.removeItem('currentUserV3');
             };
 
-            if (!currentUser) return <LoginScreen appData={appData} setAppData={setAppData} onLogin={handleLogin} showToast={showToast} />;
+            if (!currentUser) {
+                return (
+                    <LoginScreen
+                        appData={appData}
+                        syncCloudUser={syncCloudUser}
+                        onLogin={handleLogin}
+                        showToast={showToast}
+                        cloudStatus={cloudStatus}
+                        onConnectCustomCloud={handleConnectCustomCloud}
+                    />
+                );
+            }
 
             const currentTheme = themes[appData.settings.theme] || themes.blue;
             const combinedData = getCombinedData();
@@ -376,7 +679,7 @@
                     case 'kontak': return <KontakView {...props} />;
                     case 'tugas': return <TugasView {...props} />;
                     case 'perangkat': return <PerangkatView {...props} />;
-                    case 'pengaturan': return <PengaturanView appData={appData} updateSettings={updateSettings} theme={currentTheme} showToast={showToast} currentUser={currentUser} deleteUser={deleteUser} />;
+                    case 'pengaturan': return <PengaturanView appData={appData} updateSettings={updateSettings} theme={currentTheme} showToast={showToast} currentUser={currentUser} deleteUser={deleteUser} cloudStatus={cloudStatus} onConnectCustomCloud={handleConnectCustomCloud} />;
                     default: return <DashboardView data={combinedData} theme={currentTheme} />;
                 }
             };
@@ -443,7 +746,24 @@
                                     </h1>
                                 </div>
                                 
-                                <div className="flex items-center gap-4">
+                                <div className="flex items-center gap-3">
+                                    {/* Indikator Status Sinkronisasi Cloud */}
+                                    <div className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-bold ${
+                                        cloudStatus === 'synced' ? 'bg-emerald-50 border-emerald-200 text-emerald-700' :
+                                        cloudStatus === 'syncing' || cloudStatus === 'connecting' ? 'bg-amber-50 border-amber-200 text-amber-700' :
+                                        'bg-slate-100 border-slate-200 text-slate-600'
+                                    }`}>
+                                        <span className={`w-2 h-2 rounded-full ${
+                                            cloudStatus === 'synced' ? 'bg-emerald-500 animate-pulse' :
+                                            cloudStatus === 'syncing' || cloudStatus === 'connecting' ? 'bg-amber-500 animate-spin' :
+                                            'bg-slate-400'
+                                        }`}></span>
+                                        {cloudStatus === 'synced' ? 'Cloud Sinkron' :
+                                         cloudStatus === 'syncing' ? 'Menyimpan...' :
+                                         cloudStatus === 'connecting' ? 'Menghubungkan...' :
+                                         'Cloud Belum Aktif'}
+                                    </div>
+
                                     {currentUser.role === 'admin' && (
                                         <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-xl">
                                             <span className="text-xs font-bold text-amber-700 hidden md:inline">Data Guru:</span>
@@ -486,12 +806,30 @@
         }
 
         // --- HALAMAN LOGIN ---
-        function LoginScreen({ appData, setAppData, onLogin, showToast }) {
+        function LoginScreen({ appData, syncCloudUser, onLogin, showToast, cloudStatus, onConnectCustomCloud }) {
             const [tab, setTab] = useState('login'); 
             const [form, setForm] = useState({ user: '', pass: '', pass2: '', tipe: 'guru', mapelName: '' });
             const [showPass, setShowPass] = useState(false);
+            const [showCloudModal, setShowCloudModal] = useState(false);
+            const [rawConfigInput, setRawConfigInput] = useState('');
 
-            const handleSubmit = (e) => {
+            const handleSaveCloudConfig = (e) => {
+                e.preventDefault();
+                try {
+                    const cleaned = rawConfigInput.trim();
+                    const parsed = JSON.parse(cleaned);
+                    if (!parsed.apiKey || !parsed.projectId) {
+                        return showToast('JSON konfigurasi harus memiliki "apiKey" dan "projectId".', 'Format Salah');
+                    }
+                    onConnectCustomCloud(parsed);
+                    setShowCloudModal(false);
+                    setRawConfigInput('');
+                } catch (err) {
+                    showToast('Teks konfigurasi bukan format JSON yang valid.', 'Error');
+                }
+            };
+
+            const handleSubmit = async (e) => {
                 e.preventDefault();
                 if (tab === 'login') {
                     if (form.user === 'admin' && form.pass === 'admin123') {
@@ -504,12 +842,11 @@
                     else showToast('Username atau password salah! (Gunakan admin / admin123 untuk super admin)', 'Login Gagal');
                 } else if (tab === 'forgot') {
                     if (form.pass !== form.pass2) return showToast('Konfirmasi password baru tidak cocok!', 'Gagal');
-                    const userIdx = appData.users.findIndex(u => u.username === form.user);
-                    if (userIdx !== -1) {
-                        const newUsers = [...appData.users];
-                        newUsers[userIdx].password = form.pass;
-                        setAppData(prev => Object.assign({}, prev, { users: newUsers }));
-                        showToast('Password berhasil direset! Silakan masuk dengan password baru.', 'Sukses');
+                    const existingUser = appData.users.find(u => u.username === form.user);
+                    if (existingUser) {
+                        const updatedUser = Object.assign({}, existingUser, { password: form.pass });
+                        await syncCloudUser(updatedUser);
+                        showToast('Password berhasil direset dan tersinkron ke cloud! Silakan masuk dengan password baru.', 'Sukses');
                         setTab('login');
                         setForm(Object.assign({}, form, {pass: '', pass2: ''}));
                     } else {
@@ -520,8 +857,8 @@
                     if (appData.users.find(u => u.username === form.user)) return showToast('Username sudah terdaftar!', 'Gagal');
                     
                     const newUser = { username: form.user, password: form.pass, role: form.tipe, mapelName: form.tipe === 'guru_mapel' ? form.mapelName : '' };
-                    setAppData(prev => Object.assign({}, prev, { users: [...prev.users, newUser] }));
-                    showToast('Pendaftaran berhasil! Silakan masuk.', 'Sukses');
+                    await syncCloudUser(newUser);
+                    showToast('Pendaftaran berhasil dan tersimpan di cloud! Silakan masuk dari perangkat mana saja.', 'Sukses');
                     setTab('login');
                     setForm(Object.assign({}, form, {pass: '', pass2: '', tipe: 'guru', mapelName: ''}));
                 }
@@ -540,7 +877,23 @@
                                 </div>
                             )}
                             <h1 className="text-3xl font-extrabold text-white relative z-10">{appData.settings.schoolName}</h1>
-                            <p className="text-slate-400 mt-2 relative z-10 font-medium">Sistem Administrasi Terpadu</p>
+                            <p className="text-slate-400 mt-2 relative z-10 font-medium">Sistem Administrasi Terpadu (Cloud Sync)</p>
+                            
+                            <div className="mt-4 relative z-10 flex justify-center">
+                                {cloudStatus === 'synced' ? (
+                                    <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-xs font-bold">
+                                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Terhubung ke Cloud Multi-Perangkat
+                                    </span>
+                                ) : cloudStatus === 'connecting' ? (
+                                    <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/20 border border-amber-400/40 text-amber-300 text-xs font-bold">
+                                        <i className="fa-solid fa-spinner fa-spin"></i> Menghubungkan Cloud...
+                                    </span>
+                                ) : (
+                                    <button type="button" onClick={() => setShowCloudModal(true)} className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/20 hover:bg-blue-500/30 border border-blue-400/40 text-blue-200 text-xs font-bold transition">
+                                        <i className="fa-solid fa-cloud"></i> Hubungkan Cloud Mandiri
+                                    </button>
+                                )}
+                            </div>
                         </div>
                         
                         <div className="flex border-b">
@@ -596,6 +949,34 @@
                             </button>
                         </form>
                     </div>
+
+                    {showCloudModal && (
+                        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 fade-in">
+                            <div className="bg-white rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
+                                <div className="p-4 bg-slate-900 text-white flex justify-between items-center">
+                                    <h3 className="font-bold text-base"><i className="fa-solid fa-cloud mr-2"></i>Koneksi Cloud Hosting Mandiri</h3>
+                                    <button onClick={() => setShowCloudModal(false)} className="text-slate-400 hover:text-white"><i className="fa-solid fa-xmark text-lg"></i></button>
+                                </div>
+                                <form onSubmit={handleSaveCloudConfig} className="p-6 space-y-4">
+                                    <p className="text-xs text-slate-600 leading-relaxed">
+                                        Jika aplikasi dibuka di luar pratinjau utama (misalnya GitHub Pages), tempelkan objek JSON konfigurasi proyek cloud Anda di bawah ini agar semua guru tersinkronisasi otomatis:
+                                    </p>
+                                    <textarea
+                                        required
+                                        rows="5"
+                                        value={rawConfigInput}
+                                        onChange={e => setRawConfigInput(e.target.value)}
+                                        placeholder='{"apiKey": "...", "authDomain": "...", "projectId": "..."}'
+                                        className="w-full border-2 border-slate-200 p-3 rounded-xl text-xs font-mono outline-none focus:border-blue-500"
+                                    ></textarea>
+                                    <div className="flex justify-end gap-2">
+                                        <button type="button" onClick={() => setShowCloudModal(false)} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold">Batal</button>
+                                        <button type="submit" className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold">Hubungkan Cloud</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
                 </div>
             );
         }
@@ -954,6 +1335,7 @@
         function LegerView({ data, updateData, theme, showToast, activeRole, showConfirm }) {
             const { students, leger, legerCols } = data;
             const [isEditCols, setIsEditCols] = useState(false);
+            const [colDialog, setColDialog] = useState({ open: false, mode: 'add', idx: -1, value: '' });
             
             const defaultColumns = activeRole === 'guru_mapel' 
                 ? ['Tugas 1', 'Tugas 2', 'UH 1', 'UTS', 'UAS'] 
@@ -969,33 +1351,42 @@
             };
 
             const handleAddCol = () => {
-                const newCol = prompt("Masukkan nama Mapel / Tugas baru:");
-                if(newCol && newCol.trim()) {
-                    if(columns.includes(newCol.trim())) return showToast("Nama tersebut sudah ada!", "Gagal");
-                    updateData('legerCols', [...columns, newCol.trim()]);
-                }
+                setColDialog({ open: true, mode: 'add', idx: -1, value: '' });
             };
 
             const handleEditCol = (idx) => {
-                const oldName = columns[idx];
-                const newName = prompt("Ubah nama Mapel / Tugas:", oldName);
-                if(newName && newName.trim() && newName.trim() !== oldName) {
-                    if(columns.includes(newName.trim())) return showToast("Nama tersebut sudah ada!", "Gagal");
-                    
-                    const newCols = [...columns];
-                    newCols[idx] = newName.trim();
-                    
-                    const newLeger = Object.assign({}, leger);
-                    Object.keys(newLeger).forEach(studentId => {
-                        if (newLeger[studentId][oldName] !== undefined) {
-                            newLeger[studentId][newName.trim()] = newLeger[studentId][oldName];
-                            delete newLeger[studentId][oldName];
-                        }
-                    });
-                    
-                    updateData('legerCols', newCols);
-                    updateData('leger', newLeger);
+                setColDialog({ open: true, mode: 'edit', idx, value: columns[idx] });
+            };
+
+            const submitColDialog = (e) => {
+                e.preventDefault();
+                const trimmed = colDialog.value.trim();
+                if (!trimmed) return;
+
+                if (colDialog.mode === 'add') {
+                    if (columns.includes(trimmed)) return showToast("Nama tersebut sudah ada!", "Gagal");
+                    updateData('legerCols', [...columns, trimmed]);
+                } else if (colDialog.mode === 'edit') {
+                    const idx = colDialog.idx;
+                    const oldName = columns[idx];
+                    if (trimmed !== oldName) {
+                        if (columns.includes(trimmed)) return showToast("Nama tersebut sudah ada!", "Gagal");
+                        const newCols = [...columns];
+                        newCols[idx] = trimmed;
+
+                        const newLeger = Object.assign({}, leger);
+                        Object.keys(newLeger).forEach(studentId => {
+                            if (newLeger[studentId][oldName] !== undefined) {
+                                newLeger[studentId][trimmed] = newLeger[studentId][oldName];
+                                delete newLeger[studentId][oldName];
+                            }
+                        });
+
+                        updateData('legerCols', newCols);
+                        updateData('leger', newLeger);
+                    }
                 }
+                setColDialog({ open: false, mode: 'add', idx: -1, value: '' });
             };
 
             const handleDeleteCol = (idx) => {
@@ -1106,6 +1497,37 @@
                             </tbody>
                         </table>
                     </div>
+
+                    {colDialog.open && (
+                        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 fade-in print-hidden">
+                            <div className="bg-white rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl">
+                                <div className={`p-4 ${theme.bg} text-white flex justify-between items-center`}>
+                                    <h3 className="font-bold text-base">{colDialog.mode === 'add' ? 'Tambah Kolom Nilai Baru' : 'Ubah Nama Kolom'}</h3>
+                                    <button onClick={() => setColDialog({ open: false, mode: 'add', idx: -1, value: '' })} className="text-white/80 hover:text-white">
+                                        <i className="fa-solid fa-xmark"></i>
+                                    </button>
+                                </div>
+                                <form onSubmit={submitColDialog} className="p-5 space-y-4">
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-600 mb-1">Nama Mapel / Penilaian</label>
+                                        <input
+                                            autoFocus
+                                            type="text"
+                                            required
+                                            value={colDialog.value}
+                                            onChange={e => setColDialog(prev => Object.assign({}, prev, { value: e.target.value }))}
+                                            className="w-full border-2 border-slate-200 p-2.5 rounded-xl text-sm font-bold outline-none focus:border-blue-500"
+                                            placeholder="Contoh: UH 2 / IPAS"
+                                        />
+                                    </div>
+                                    <div className="flex justify-end gap-2">
+                                        <button type="button" onClick={() => setColDialog({ open: false, mode: 'add', idx: -1, value: '' })} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-bold">Batal</button>
+                                        <button type="submit" className={`px-4 py-2 ${theme.bg} text-white rounded-xl text-sm font-bold`}>Simpan</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
                 </div>
             );
         }
@@ -1273,7 +1695,6 @@
                     });
                     
                     updateData(dataKey, [...(dataState || []), ...newData]);
-                    alert("Data berhasil diimpor!");
                 };
                 reader.readAsBinaryString(file); e.target.value = null;
             };
@@ -1442,7 +1863,7 @@
             const generateAI = async () => {
                 if (!aiPrompt.trim()) return showToast("Mohon ketik materi atau topik terlebih dahulu!", "Peringatan");
                 
-                const apiKey = settings?.apiKey?.trim();
+                const apiKey = decodeApiKey(settings?.apiKey).trim();
                 if (!apiKey) {
                     return showToast("Kunci Akses AI (API Key) belum diisi! Silakan buka menu 'Pengaturan Tema'.", "Error");
                 }
@@ -1466,7 +1887,7 @@
             const generateLkpd = async () => {
                 if (!lkpdForm.mapel || !lkpdForm.kelas) return showToast("Mapel dan Kelas wajib diisi untuk menghasilkan LKPD!", "Peringatan");
                 
-                const apiKey = settings?.apiKey?.trim();
+                const apiKey = decodeApiKey(settings?.apiKey).trim();
                 if (!apiKey) {
                     return showToast("Kunci Akses AI (API Key) belum diisi! Silakan buka menu 'Pengaturan Tema'.", "Error");
                 }
@@ -1851,12 +2272,72 @@
             );
         }
 
-        function PengaturanView({ appData, updateSettings, theme, showToast, currentUser, deleteUser }) {
+        function PengaturanView({ appData, updateSettings, theme, showToast, currentUser, deleteUser, cloudStatus, onConnectCustomCloud }) {
             const [form, setForm] = useState(appData.settings);
-            const save = () => { updateSettings(form); showToast("Pengaturan berhasil disimpan!", "Sukses"); };
+            const [isApiUnlocked, setIsApiUnlocked] = useState(false);
+            const [unlockInput, setUnlockInput] = useState('');
+            const [newApiPass, setNewApiPass] = useState('');
+            const [showApiPlain, setShowApiPlain] = useState(false);
+            const [customJson, setCustomJson] = useState('');
+
+            useEffect(() => {
+                setForm(prev => Object.assign({}, appData.settings, {
+                    apiKey: isApiUnlocked ? (prev.apiKey !== undefined ? prev.apiKey : appData.settings.apiKey) : appData.settings.apiKey
+                }));
+            }, [appData.settings.theme, appData.settings.schoolName, appData.settings.logo, appData.settings.apiKeyEnc]);
+
+            const handleUnlockApi = (e) => {
+                e.preventDefault();
+                const currentPass = appData.settings.apiKeyPassword || 'admin123';
+                if (unlockInput === currentPass) {
+                    setIsApiUnlocked(true);
+                    setUnlockInput('');
+                    setForm(prev => Object.assign({}, prev, { apiKey: appData.settings.apiKey || '' }));
+                    showToast("Akses Kunci AI berhasil dibuka!", "Terbuka");
+                } else {
+                    showToast("Password akses API Key salah!", "Akses Ditolak");
+                }
+            };
+
+            const save = () => {
+                const payload = Object.assign({}, form);
+                if (isApiUnlocked && newApiPass.trim()) {
+                    payload.apiKeyPassword = newApiPass.trim();
+                }
+                updateSettings(payload);
+                setIsApiUnlocked(false);
+                setShowApiPlain(false);
+                setNewApiPass('');
+                showToast("Pengaturan berhasil disimpan & tersinkronisasi ke semua perangkat!", "Sukses");
+            };
+
+            const handleApplyCustomCloud = () => {
+                try {
+                    const parsed = JSON.parse(customJson.trim());
+                    if (!parsed.apiKey || !parsed.projectId) {
+                        return showToast('JSON konfigurasi harus memiliki "apiKey" dan "projectId".', 'Format Salah');
+                    }
+                    onConnectCustomCloud(parsed);
+                    setCustomJson('');
+                } catch (e) {
+                    showToast('Format JSON tidak valid.', 'Error');
+                }
+            };
+
+            const hasSavedKey = Boolean(appData.settings.apiKey || appData.settings.apiKeyEnc);
+
             return (
                 <div className="space-y-6 max-w-xl fade-in print-hidden">
-                    <h2 className="text-2xl font-bold">Pengaturan Aplikasi</h2>
+                    <div className="flex items-center justify-between">
+                        <h2 className="text-2xl font-bold">Pengaturan Aplikasi</h2>
+                        <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+                            cloudStatus === 'synced' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+                        }`}>
+                            <i className="fa-solid fa-cloud mr-1"></i>
+                            {cloudStatus === 'synced' ? 'Tersinkron ke Cloud' : 'Status: ' + cloudStatus}
+                        </span>
+                    </div>
+
                     <div className="bg-white p-8 rounded-3xl shadow-sm border space-y-6">
                         <div>
                             <label className="block text-sm font-bold text-slate-700 mb-3">Tema Warna UI</label>
@@ -1876,13 +2357,96 @@
                             <label className="block text-sm font-bold text-slate-700 mb-1">URL Logo Resmi</label>
                             <input type="text" value={form.logo} onChange={e=>setForm(Object.assign({}, form, {logo: e.target.value}))} className="w-full border-2 p-3 rounded-xl" placeholder="https://..." />
                         </div>
-                        <div className="p-4 bg-blue-50 border border-blue-200 rounded-2xl">
-                            <label className="block text-sm font-bold text-blue-900 mb-1"><i className="fa-solid fa-key mr-2"></i>Kunci Akses AI (API Key Gemini)</label>
-                            <input type="password" value={form.apiKey || ''} onChange={e=>setForm(Object.assign({}, form, {apiKey: e.target.value}))} className="w-full border-2 border-blue-300 p-3 rounded-xl bg-white focus:border-blue-600 outline-none" placeholder="Ketik/Paste API Key Google Gemini..." />
-                            <p className="text-xs text-blue-700 mt-2 font-medium">Dapatkan API Key secara gratis dari <a href="https://aistudio.google.com/app/apikey" target="_blank" className="underline font-bold hover:text-blue-900">Google AI Studio</a>. Kunci ini wajib diisi agar AI bisa membalas permintaan Anda.</p>
+
+                        {/* Bagian Kunci Akses AI yang Tersembunyi & Dilindungi Password */}
+                        <div className="p-5 bg-blue-50 border border-blue-200 rounded-2xl space-y-3">
+                            <div className="flex items-center justify-between">
+                                <label className="block text-sm font-bold text-blue-900">
+                                    <i className="fa-solid fa-shield-halved mr-2"></i>Kunci Akses AI (API Key Gemini)
+                                </label>
+                                <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${hasSavedKey ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                                    {hasSavedKey ? '✓ Terpasang di Cloud' : 'Belum Diisi'}
+                                </span>
+                            </div>
+
+                            {!isApiUnlocked ? (
+                                <form onSubmit={handleUnlockApi} className="space-y-3 pt-1">
+                                    <p className="text-xs text-blue-800 leading-relaxed">
+                                        Kunci AI disembunyikan dan tersimpan otomatis di cloud agar dapat dipakai seluruh guru lintas perangkat tanpa membagikan kuncinya. Masukkan password khusus untuk melihat atau mengubah API Key.
+                                    </p>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="password"
+                                            value={unlockInput}
+                                            onChange={e => setUnlockInput(e.target.value)}
+                                            className="flex-1 border-2 border-blue-300 p-2.5 rounded-xl bg-white text-sm focus:border-blue-600 outline-none"
+                                            placeholder="Masukkan password akses (default: admin123)"
+                                        />
+                                        <button type="submit" className="px-4 py-2.5 bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 shadow-sm">
+                                            <i className="fa-solid fa-lock-open"></i> Buka Kunci
+                                        </button>
+                                    </div>
+                                </form>
+                            ) : (
+                                <div className="space-y-3 pt-1 fade-in">
+                                    <div className="relative">
+                                        <input
+                                            type={showApiPlain ? "text" : "password"}
+                                            value={form.apiKey || ''}
+                                            onChange={e=>setForm(Object.assign({}, form, {apiKey: e.target.value}))}
+                                            className="w-full border-2 border-blue-300 p-3 pr-10 rounded-xl bg-white focus:border-blue-600 outline-none text-sm font-mono"
+                                            placeholder="Ketik/Paste API Key Google Gemini..."
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowApiPlain(!showApiPlain)}
+                                            className="absolute right-3 top-3.5 text-slate-400 hover:text-blue-700"
+                                            title={showApiPlain ? "Sembunyikan" : "Tampilkan"}
+                                        >
+                                            <i className={`fa-solid ${showApiPlain ? 'fa-eye-slash' : 'fa-eye'}`}></i>
+                                        </button>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-xs font-bold text-blue-900 mb-1">Ubah Password Akses API Key (Opsional)</label>
+                                        <input
+                                            type="password"
+                                            value={newApiPass}
+                                            onChange={e => setNewApiPass(e.target.value)}
+                                            className="w-full border border-blue-300 p-2.5 rounded-xl bg-white text-xs focus:border-blue-600 outline-none"
+                                            placeholder="Kosongkan jika tidak ingin mengganti password"
+                                        />
+                                    </div>
+
+                                    <div className="flex items-center justify-between">
+                                        <p className="text-xs text-blue-700 font-medium">
+                                            Dapatkan API Key gratis di <a href="https://aistudio.google.com/app/apikey" target="_blank" className="underline font-bold hover:text-blue-900">Google AI Studio</a>.
+                                        </p>
+                                        <button type="button" onClick={() => { setIsApiUnlocked(false); setShowApiPlain(false); }} className="text-xs font-bold text-slate-500 hover:text-slate-800">
+                                            <i className="fa-solid fa-lock mr-1"></i>Kunci Kembali
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                         </div>
-                        <button onClick={save} className={`w-full py-4 ${theme.bg} ${theme.hover} text-white font-bold rounded-xl shadow-lg`}>Simpan Pengaturan</button>
+
+                        <button onClick={save} className={`w-full py-4 ${theme.bg} ${theme.hover} text-white font-bold rounded-xl shadow-lg`}>Simpan Pengaturan ke Cloud</button>
                     </div>
+
+                    {cloudStatus === 'unconfigured' && (
+                        <div className="bg-white p-6 rounded-3xl shadow-sm border border-amber-200 space-y-3">
+                            <h3 className="text-base font-bold text-amber-800"><i className="fa-solid fa-cloud-arrow-up mr-2"></i>Hubungkan Cloud Hosting Mandiri</h3>
+                            <p className="text-xs text-slate-600">Tempelkan konfigurasi JSON cloud Anda jika aplikasi ini dijalankan dari domain hosting eksternal (seperti GitHub Pages):</p>
+                            <textarea
+                                rows="4"
+                                value={customJson}
+                                onChange={e => setCustomJson(e.target.value)}
+                                placeholder='{"apiKey": "...", "authDomain": "...", "projectId": "..."}'
+                                className="w-full border-2 border-slate-200 p-3 rounded-xl text-xs font-mono outline-none focus:border-amber-500"
+                            ></textarea>
+                            <button onClick={handleApplyCustomCloud} className="px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl">Aktifkan Sinkronisasi Cloud</button>
+                        </div>
+                    )}
 
                     {currentUser && currentUser.role === 'admin' && (
                         <div className="bg-white p-8 rounded-3xl shadow-sm border space-y-4 mt-6">
