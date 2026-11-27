@@ -21,6 +21,9 @@
     <!-- SheetJS untuk Excel -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
+    <!-- jsQR untuk Pemindai Kamera QR Code di Android & Desktop -->
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+
     <!-- Cloud SDK untuk Sinkronisasi Real-Time Lintas Perangkat -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -1247,26 +1250,259 @@
             const [dateStr, setDateStr] = useState(new Date().toISOString().split('T')[0]);
             const [showScanner, setShowScanner] = useState(false);
             const [scanInput, setScanInput] = useState('');
+            const [cameraStatus, setCameraStatus] = useState('idle'); // 'idle' | 'starting' | 'active' | 'error'
+            const [cameraError, setCameraError] = useState('');
+            const [facingMode, setFacingMode] = useState('environment');
+            const [torchSupported, setTorchSupported] = useState(false);
+            const [torchOn, setTorchOn] = useState(false);
+            const [scanFeedback, setScanFeedback] = useState(null);
+            const [scannedCount, setScannedCount] = useState(0);
+
             const scanRef = useRef(null);
+            const videoRef = useRef(null);
+            const canvasRef = useRef(null);
+            const streamRef = useRef(null);
+            const rafRef = useRef(null);
+            const lastScanRef = useRef({ code: '', time: 0 });
+            const latestRef = useRef({ students, absensi, dateStr, updateData });
+
+            useEffect(() => {
+                latestRef.current = { students, absensi, dateStr, updateData };
+            }, [students, absensi, dateStr, updateData]);
+
+            const playBeep = (isSuccess) => {
+                try {
+                    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                    if (!AudioCtx) return;
+                    const ctx = new AudioCtx();
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(isSuccess ? 880 : 280, ctx.currentTime);
+                    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + (isSuccess ? 0.18 : 0.28));
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start();
+                    osc.stop(ctx.currentTime + (isSuccess ? 0.18 : 0.28));
+                } catch (e) {}
+            };
 
             const handleStatus = (id, st) => {
-                const updated = Object.assign({}, absensi);
-                if (!updated[dateStr]) updated[dateStr] = {};
-                updated[dateStr][id] = st;
-                updateData('absensi', updated);
+                const { absensi: curAbsensi, dateStr: curDate, updateData: curUpdate } = latestRef.current;
+                const updated = Object.assign({}, curAbsensi);
+                if (!updated[curDate]) updated[curDate] = {};
+                updated[curDate] = Object.assign({}, updated[curDate], { [id]: st });
+                curUpdate('absensi', updated);
+            };
+
+            const processScannedCode = (rawCode) => {
+                const code = String(rawCode || '').trim();
+                if (!code) return;
+                const { students: curStudents } = latestRef.current;
+                const target = curStudents.find(s => String(s.nisn).trim() === code);
+                const waktu = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+                if (target) {
+                    handleStatus(target.id, 'Hadir');
+                    playBeep(true);
+                    setScannedCount(prev => prev + 1);
+                    setScanFeedback({ type: 'success', text: `${target.nama} (${target.nisn}) tercatat Hadir`, time: waktu });
+                } else {
+                    playBeep(false);
+                    setScanFeedback({ type: 'error', text: `NISN "${code}" tidak ditemukan di daftar siswa.`, time: waktu });
+                }
+            };
+
+            const stopCamera = () => {
+                if (rafRef.current) {
+                    cancelAnimationFrame(rafRef.current);
+                    rafRef.current = null;
+                }
+                if (streamRef.current) {
+                    streamRef.current.getTracks().forEach(track => {
+                        try { track.stop(); } catch (e) {}
+                    });
+                    streamRef.current = null;
+                }
+                if (videoRef.current) {
+                    videoRef.current.srcObject = null;
+                }
+                setTorchOn(false);
+                setTorchSupported(false);
+            };
+
+            const startCamera = async (targetFacing) => {
+                stopCamera();
+                setCameraStatus('starting');
+                setCameraError('');
+
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    setCameraStatus('error');
+                    setCameraError('Browser tidak mendukung akses kamera langsung atau halaman tidak dibuka lewat HTTPS. Gunakan tombol "Foto QR" atau ketik NISN di bawah.');
+                    return;
+                }
+
+                const constraintList = [
+                    { video: { facingMode: { ideal: targetFacing }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+                    { video: { facingMode: targetFacing }, audio: false },
+                    { video: true, audio: false }
+                ];
+
+                let stream = null;
+                let lastErr = null;
+                for (const constraints of constraintList) {
+                    try {
+                        stream = await navigator.mediaDevices.getUserMedia(constraints);
+                        if (stream) break;
+                    } catch (err) {
+                        lastErr = err;
+                    }
+                }
+
+                if (!stream) {
+                    setCameraStatus('error');
+                    if (lastErr && (lastErr.name === 'NotAllowedError' || lastErr.name === 'PermissionDeniedError')) {
+                        setCameraError('Izin kamera ditolak. Ketuk ikon gembok/pengaturan di bilah alamat Chrome Android lalu izinkan Kamera, kemudian tekan "Coba Lagi".');
+                    } else if (lastErr && lastErr.name === 'NotFoundError') {
+                        setCameraError('Kamera tidak ditemukan pada perangkat ini.');
+                    } else {
+                        setCameraError(`Kamera gagal dibuka (${lastErr?.message || 'Tidak tersedia'}). Gunakan tombol "Foto QR" di bawah.`);
+                    }
+                    return;
+                }
+
+                streamRef.current = stream;
+
+                // Cek dukungan lampu senter (torch) pada kamera belakang Android
+                try {
+                    const videoTrack = stream.getVideoTracks()[0];
+                    if (videoTrack && typeof videoTrack.getCapabilities === 'function') {
+                        const caps = videoTrack.getCapabilities();
+                        if (caps && caps.torch) setTorchSupported(true);
+                    }
+                } catch (e) {}
+
+                const videoEl = videoRef.current;
+                if (!videoEl) {
+                    stopCamera();
+                    return;
+                }
+
+                videoEl.srcObject = stream;
+                videoEl.setAttribute('playsinline', 'true');
+                videoEl.muted = true;
+
+                try {
+                    await videoEl.play();
+                    setCameraStatus('active');
+                } catch (playErr) {
+                    setCameraStatus('error');
+                    setCameraError('Gagal memutar pratinjau kamera. Ketuk "Coba Lagi" untuk memulai ulang.');
+                    return;
+                }
+
+                const scanLoop = () => {
+                    if (!streamRef.current || !videoRef.current || !canvasRef.current) return;
+                    const v = videoRef.current;
+                    const c = canvasRef.current;
+
+                    if (v.readyState >= 2 && v.videoWidth > 0 && v.videoHeight > 0 && typeof window.jsQR === 'function') {
+                        const scale = Math.min(1, 640 / v.videoWidth);
+                        c.width = Math.floor(v.videoWidth * scale);
+                        c.height = Math.floor(v.videoHeight * scale);
+                        const ctx = c.getContext('2d', { willReadFrequently: true });
+                        ctx.drawImage(v, 0, 0, c.width, c.height);
+                        const imageData = ctx.getImageData(0, 0, c.width, c.height);
+                        const qr = window.jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'attemptBoth' });
+
+                        if (qr && qr.data) {
+                            const detectedCode = String(qr.data).trim();
+                            const now = Date.now();
+                            if (detectedCode && (detectedCode !== lastScanRef.current.code || now - lastScanRef.current.time > 3000)) {
+                                lastScanRef.current = { code: detectedCode, time: now };
+                                processScannedCode(detectedCode);
+                            }
+                        }
+                    }
+
+                    rafRef.current = requestAnimationFrame(scanLoop);
+                };
+
+                rafRef.current = requestAnimationFrame(scanLoop);
+            };
+
+            useEffect(() => {
+                if (showScanner) {
+                    const timer = setTimeout(() => {
+                        startCamera(facingMode);
+                    }, 150);
+                    return () => {
+                        clearTimeout(timer);
+                        stopCamera();
+                    };
+                } else {
+                    stopCamera();
+                    setCameraStatus('idle');
+                    setCameraError('');
+                }
+            }, [showScanner, facingMode]);
+
+            const toggleTorch = async () => {
+                if (!streamRef.current) return;
+                const videoTrack = streamRef.current.getVideoTracks()[0];
+                if (!videoTrack) return;
+                try {
+                    const nextState = !torchOn;
+                    await videoTrack.applyConstraints({ advanced: [{ torch: nextState }] });
+                    setTorchOn(nextState);
+                } catch (e) {
+                    showToast('Lampu senter tidak didukung pada mode kamera ini.', 'Info');
+                }
+            };
+
+            const handleQrImageUpload = (e) => {
+                const file = e.target.files && e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const c = canvasRef.current || document.createElement('canvas');
+                        const scale = Math.min(1, 1000 / Math.max(img.width, img.height));
+                        c.width = Math.floor(img.width * scale);
+                        c.height = Math.floor(img.height * scale);
+                        const ctx = c.getContext('2d');
+                        ctx.drawImage(img, 0, 0, c.width, c.height);
+                        const imgData = ctx.getImageData(0, 0, c.width, c.height);
+                        if (typeof window.jsQR === 'function') {
+                            const qr = window.jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
+                            if (qr && qr.data) {
+                                processScannedCode(qr.data);
+                            } else {
+                                playBeep(false);
+                                setScanFeedback({ type: 'error', text: 'QR Code tidak terbaca pada foto. Pastikan gambar jelas & tidak buram.', time: '' });
+                            }
+                        }
+                    };
+                    img.src = ev.target.result;
+                };
+                reader.readAsDataURL(file);
+                e.target.value = null;
             };
 
             const handleScan = (e) => {
                 e.preventDefault();
-                const target = students.find(s => s.nisn === scanInput);
-                if (target) {
-                    handleStatus(target.id, 'Hadir');
-                    showToast(`✅ Berhasil! ${target.nama} Hadir.`, "Scan Berhasil");
-                } else {
-                    showToast('❌ NISN tidak ditemukan!', "Gagal");
-                }
+                if (!scanInput.trim()) return;
+                processScannedCode(scanInput);
                 setScanInput('');
                 if (scanRef.current) scanRef.current.focus();
+            };
+
+            const closeScanner = () => {
+                stopCamera();
+                setShowScanner(false);
+                setScanFeedback(null);
             };
 
             const exportAbsensi = (months) => {
@@ -1318,11 +1554,11 @@
             return (
                 <div className="space-y-6 fade-in">
                     <div className="flex flex-col gap-4 print-hidden">
-                        <div className="flex flex-wrap justify-between gap-4 items-center">
+                        <div className="flex flex-wrap justify-between gap-3 items-center">
                             <h2 className="text-2xl font-bold">Rekap Absensi Harian</h2>
-                            <div className="flex gap-2">
-                                <input type="date" value={dateStr} onChange={e=>setDateStr(e.target.value)} className="border-2 p-2.5 rounded-xl text-sm font-bold bg-white outline-none focus:border-blue-500" />
-                                <button onClick={() => setShowScanner(true)} className={`${theme.bg} ${theme.hover} text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-md transition`}><i className="fa-solid fa-qrcode"></i> Scan QR</button>
+                            <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+                                <input type="date" value={dateStr} onChange={e=>setDateStr(e.target.value)} className="flex-1 sm:flex-none border-2 p-2.5 rounded-xl text-sm font-bold bg-white outline-none focus:border-blue-500" />
+                                <button type="button" onClick={() => { setScannedCount(0); setScanFeedback(null); setShowScanner(true); }} className={`flex-1 sm:flex-none justify-center ${theme.bg} ${theme.hover} text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-md transition active:scale-95`}><i className="fa-solid fa-qrcode"></i> Scan QR</button>
                             </div>
                         </div>
                         <div className="bg-white p-4 rounded-xl border shadow-sm flex flex-wrap items-center gap-3">
@@ -1337,18 +1573,118 @@
                     </div>
 
                     {showScanner && (
-                        <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4 print-hidden fade-in">
-                            <div className="bg-white p-6 rounded-3xl w-full max-w-sm shadow-2xl relative overflow-hidden">
-                                <div className="flex justify-between items-center mb-6">
-                                    <h3 className="font-black text-xl">Scan QR Siswa</h3>
-                                    <button onClick={() => setShowScanner(false)} className="text-slate-400 hover:text-slate-800"><i className="fa-solid fa-xmark text-2xl"></i></button>
+                        <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-3 sm:p-4 print-hidden fade-in">
+                            <div className="bg-white p-5 rounded-3xl w-full max-w-md max-h-[92vh] overflow-y-auto shadow-2xl relative">
+                                <div className="flex justify-between items-center mb-4">
+                                    <div>
+                                        <h3 className="font-black text-lg text-slate-800 flex items-center gap-2">
+                                            <i className={`fa-solid fa-qrcode ${theme.text}`}></i> Scan QR Siswa
+                                        </h3>
+                                        <p className="text-xs text-slate-500">Tanggal: {dateStr} {scannedCount > 0 ? `• ${scannedCount} berhasil dipindai` : ''}</p>
+                                    </div>
+                                    <button type="button" onClick={closeScanner} className="w-10 h-10 flex items-center justify-center rounded-xl bg-slate-100 text-slate-500 hover:text-slate-800 hover:bg-slate-200 transition">
+                                        <i className="fa-solid fa-xmark text-xl"></i>
+                                    </button>
                                 </div>
-                                <div className="w-full aspect-square bg-slate-900 rounded-2xl flex items-center justify-center relative overflow-hidden mb-6 border-4 border-slate-200 shadow-inner">
-                                    <i className="fa-solid fa-camera text-slate-600 text-6xl"></i>
-                                    <div className="scan-line"></div>
+
+                                {/* Layar Kamera Langsung */}
+                                <div className="w-full aspect-square bg-slate-900 rounded-2xl flex items-center justify-center relative overflow-hidden mb-3 border-4 border-slate-200 shadow-inner">
+                                    <video
+                                        ref={videoRef}
+                                        autoPlay
+                                        playsInline
+                                        muted
+                                        className={`w-full h-full object-cover ${cameraStatus === 'active' ? 'block' : 'hidden'}`}
+                                    ></video>
+                                    <canvas ref={canvasRef} className="hidden"></canvas>
+
+                                    {cameraStatus === 'active' && (
+                                        <React.Fragment>
+                                            <div className="absolute inset-8 border-2 border-emerald-400/80 rounded-2xl pointer-events-none shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]"></div>
+                                            <div className="scan-line pointer-events-none"></div>
+                                            <span className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-black/70 text-white text-[11px] font-bold px-3 py-1 rounded-full whitespace-nowrap">
+                                                Arahkan kamera ke QR Kartu Siswa
+                                            </span>
+                                        </React.Fragment>
+                                    )}
+
+                                    {cameraStatus === 'starting' && (
+                                        <div className="text-center text-slate-300 p-4 space-y-2">
+                                            <i className="fa-solid fa-spinner fa-spin text-4xl text-blue-400"></i>
+                                            <p className="text-xs font-bold">Membuka kamera smartphone...</p>
+                                            <p className="text-[11px] text-slate-400">Pilih "Izinkan / Allow" jika muncul permintaan izin kamera.</p>
+                                        </div>
+                                    )}
+
+                                    {cameraStatus === 'error' && (
+                                        <div className="text-center text-white p-5 space-y-3">
+                                            <i className="fa-solid fa-video-slash text-4xl text-rose-400"></i>
+                                            <p className="text-xs text-slate-200 leading-relaxed">{cameraError}</p>
+                                            <button type="button" onClick={() => startCamera(facingMode)} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl">
+                                                <i className="fa-solid fa-rotate-right mr-1.5"></i> Coba Lagi
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
-                                <form onSubmit={handleScan}>
-                                    <input autoFocus ref={scanRef} type="text" value={scanInput} onChange={e=>setScanInput(e.target.value)} placeholder="Tembak alat scan ke sini (Ketik NISN)" className="w-full border-2 border-slate-200 p-4 rounded-xl text-center font-bold outline-none focus:border-blue-500 bg-slate-50" />
+
+                                {/* Tombol Kontrol Kamera Android */}
+                                <div className="grid grid-cols-3 gap-2 mb-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => setFacingMode(prev => prev === 'environment' ? 'user' : 'environment')}
+                                        className="py-2.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition"
+                                    >
+                                        <i className="fa-solid fa-camera-rotate"></i> {facingMode === 'environment' ? 'Belakang' : 'Depan'}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={toggleTorch}
+                                        disabled={!torchSupported}
+                                        className={`py-2.5 px-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition ${torchOn ? 'bg-amber-500 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'} disabled:opacity-40`}
+                                    >
+                                        <i className="fa-solid fa-bolt"></i> Senter
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => document.getElementById('qr-photo-fallback').click()}
+                                        className="py-2.5 px-2 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition"
+                                    >
+                                        <i className="fa-solid fa-camera"></i> Foto QR
+                                    </button>
+                                    <input
+                                        id="qr-photo-fallback"
+                                        type="file"
+                                        accept="image/*"
+                                        capture="environment"
+                                        className="hidden"
+                                        onChange={handleQrImageUpload}
+                                    />
+                                </div>
+
+                                {/* Hasil Pemindaian Langsung */}
+                                {scanFeedback && (
+                                    <div className={`mb-3 p-3 rounded-xl text-xs font-bold flex items-center justify-between gap-2 fade-in ${scanFeedback.type === 'success' ? 'bg-emerald-50 border border-emerald-200 text-emerald-700' : 'bg-rose-50 border border-rose-200 text-rose-700'}`}>
+                                        <div className="flex items-center gap-2">
+                                            <i className={`fa-solid ${scanFeedback.type === 'success' ? 'fa-circle-check text-base' : 'fa-circle-exclamation text-base'}`}></i>
+                                            <span>{scanFeedback.text}</span>
+                                        </div>
+                                        {scanFeedback.time && <span className="text-[10px] opacity-75 whitespace-nowrap">{scanFeedback.time}</span>}
+                                    </div>
+                                )}
+
+                                {/* Input Cadangan (Ketik NISN / Scanner USB) */}
+                                <form onSubmit={handleScan} className="flex gap-2">
+                                    <input
+                                        ref={scanRef}
+                                        type="text"
+                                        value={scanInput}
+                                        onChange={e=>setScanInput(e.target.value)}
+                                        placeholder="Atau ketik NISN / alat scan USB..."
+                                        className="flex-1 border-2 border-slate-200 px-3 py-2.5 rounded-xl text-xs font-bold outline-none focus:border-blue-500 bg-slate-50"
+                                    />
+                                    <button type="submit" className={`px-4 py-2.5 ${theme.bg} text-white rounded-xl text-xs font-bold shadow-sm`}>
+                                        Hadir
+                                    </button>
                                 </form>
                             </div>
                         </div>
@@ -1366,10 +1702,10 @@
                                         <tr key={s.id}>
                                             <td className="p-4 font-bold text-slate-800">{s.nama}</td>
                                             <td className="p-4">
-                                                <div className="flex justify-center gap-2">
+                                                <div className="flex flex-wrap justify-center gap-2">
                                                     {['Hadir', 'Sakit', 'Izin', 'Alpa'].map(st => (
                                                         <button key={st} onClick={() => handleStatus(s.id, st)}
-                                                            className={`px-4 py-1.5 rounded-lg text-xs font-bold border transition ${currentStatus === st ? `${theme.bg} text-white border-transparent shadow-md` : 'bg-white text-slate-500 hover:bg-slate-100'}`}>{st}</button>
+                                                            className={`px-3 sm:px-4 py-2 rounded-lg text-xs font-bold border transition ${currentStatus === st ? `${theme.bg} text-white border-transparent shadow-md` : 'bg-white text-slate-500 hover:bg-slate-100'}`}>{st}</button>
                                                     ))}
                                                 </div>
                                             </td>
